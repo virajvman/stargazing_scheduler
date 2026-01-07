@@ -350,6 +350,17 @@ def select_optimal_ordering(time_local_datetimes, intervals, midpoints, chosen_o
     
     return df_schedule
 
+
+
+def create_observability_link(object_name, date, month, YYYY):
+    '''
+    Function to create observability links
+    '''
+
+    link_template = f"https://in-the-sky.org/data/object.php?id={object_name}&day={date}&month={month}&year={YYYY}"
+
+    return link_template
+
  
 def main_scheduler(date, start_time, end_time, num_cluster=0, num_nebula=0, num_galaxy=0, num_planet=0, num_point=0,
                     telescope_objs_dict=None,min_altitude=30):
@@ -491,7 +502,14 @@ def main_scheduler(date, start_time, end_time, num_cluster=0, num_nebula=0, num_
                         chosen_alts, 
                         min_altitude=min_altitude)
 
+
+    #print the observability links
+    date_splits = date.split("-")
+    for name_i in df_schedule["object"].tolist():
+        print(create_observability_link(name_i, date_splits[2], date_splits[1], date_splits[0]))
+
     ##return stuff
+
 
     return_dict = {"time_local_datetimes": time_local_datetimes,
                     "best_cluster": best_cluster, "best_nebula": best_nebula, "best_planet": best_planet, "best_galaxy": best_galaxy, "best_point": best_point,
