@@ -9,7 +9,7 @@ from astroquery.simbad import Simbad
 from astropy.coordinates import EarthLocation, AltAz, get_body
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
-
+from target_lists import common_name, outreach_link,  cluster_type_mapping
 import pytz
 from datetime import datetime
 
@@ -361,6 +361,80 @@ def create_observability_link(object_name, date, month, YYYY):
 
     return link_template
 
+
+
+def dt_to_timestr(dt):
+    '''
+    Function to convert time into a readable string
+    '''
+    return dt.strftime("%I:%M").lstrip("0")
+
+
+
+def format_table(df, date, telescope_type=None):
+    '''
+    In this function, we format the table so we can save it as a csv file
+    '''
+
+    date_splits = date.split("-")
+
+    #the columns in the formatted catalog we want!
+    columns = ["Name", "Object Type", "Elevation", "Trajectory", "Catalog Name", "Outreach Info", "Interval", "Visibility Link"]
+
+    new_dict = {}
+
+    for ci in columns:
+        new_dict[ci] = []
+
+    for i,name_i in enumerate(df["object"].tolist()):
+        #get the object names
+        if name_i in common_name:
+            new_dict["Name"].append(common_name[name_i])
+        else:
+            new_dict["Name"].append(name_i)
+        new_dict["Catalog Name"].append(name_i)
+
+        #get the object types
+        if df["type"][i] == "cluster":
+            new_dict["Object Type"].append(cluster_type_mapping[name_i])
+        else:
+            new_dict["Object Type"].append(df["type"][i])
+
+        #get the elevation and tracjectories
+        new_dict["Elevation"].append( df["elev"][i] )
+        new_dict["Trajectory"].append( df["path"][i] )
+
+        #get the interval
+        new_dict["Interval"].append( dt_to_timestr(df["start"][i]) + "-" + dt_to_timestr(df["end"][i]) )
+
+        #get the visibility link
+        link_i = create_observability_link(name_i, date_splits[2], date_splits[1], date_splits[0])
+        new_dict["Visibility Link"].append(link_i)
+
+        #get the Outreach info
+        if new_dict["Object Type"][i] == "Open Cluster" or new_dict["Object Type"][i] == "Globular Cluster":
+            new_dict["Outreach Info"].append(outreach_link[new_dict["Object Type"][i] ])
+
+        elif new_dict["Object Type"][i] == "galaxy":
+            new_dict["Outreach Info"].append(outreach_link["galaxy"])
+
+        elif new_dict["Object Type"][i] == "planet":
+            new_dict["Outreach Info"].append(outreach_link["planet"])
+
+        elif new_dict["Object Type"][i] == "nebula":
+            new_dict["Outreach Info"].append(outreach_link["nebula"])
+
+        else:
+            new_dict["Outreach Info"].append("")
+
+
+    #convert the dict to a dataframe and save as a csv
+
+    df = pd.DataFrame(new_dict)
+    df.to_csv(f"output/catalog_{telescope_type}.csv", index=False)
+
+    return
+
  
 def main_scheduler(date, start_time, end_time, num_cluster=0, num_nebula=0, num_galaxy=0, num_planet=0, num_point=0,
                     telescope_objs_dict=None,min_altitude=30):
@@ -502,14 +576,11 @@ def main_scheduler(date, start_time, end_time, num_cluster=0, num_nebula=0, num_
                         chosen_alts, 
                         min_altitude=min_altitude)
 
+    ##format the table!
 
-    #print the observability links
-    date_splits = date.split("-")
-    for name_i in df_schedule["object"].tolist():
-        print(create_observability_link(name_i, date_splits[2], date_splits[1], date_splits[0]))
+    format_table(df_schedule, date, telescope_objs_dict["telescope_type"])
 
     ##return stuff
-
 
     return_dict = {"time_local_datetimes": time_local_datetimes,
                     "best_cluster": best_cluster, "best_nebula": best_nebula, "best_planet": best_planet, "best_galaxy": best_galaxy, "best_point": best_point,
