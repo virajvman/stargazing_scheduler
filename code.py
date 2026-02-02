@@ -263,6 +263,7 @@ def select_optimal_ordering(time_local_datetimes, intervals, midpoints, chosen_o
     if len(time_np) != len(chosen_alts[0]):
         raise ValueError("The time and altitude trajectory array do not have the same length!")
 
+
     #looping over each time interval (specifically the list of interval midpoints)
     for mp in midpoints:    
         # Convert to numpy datetime64
@@ -299,7 +300,6 @@ def select_optimal_ordering(time_local_datetimes, intervals, midpoints, chosen_o
             frac_notobs = 1 - (tot_time_obs_left/tot_time_left)
             frac_notobs_objs.append(frac_notobs)
             
-        
         #compute the object scores for the objects left!!
         final_object_scores = []
         final_remain_idx = []
@@ -343,6 +343,7 @@ def select_optimal_ordering(time_local_datetimes, intervals, midpoints, chosen_o
         # Remove this object from remaining
         remaining_indices.remove(chosen_idx)
 
+    print("Unscheduled objects:", [chosen_objects[i] for i in remaining_indices])
         
     #Convert to DataFrame
     df_schedule = pd.DataFrame(schedule)
@@ -371,7 +372,7 @@ def dt_to_timestr(dt):
 
 
 
-def format_table(df, date, telescope_type=None):
+def format_table(df, date, telescope_type=None, split_table=1):
     '''
     In this function, we format the table so we can save it as a csv file
     '''
@@ -430,14 +431,26 @@ def format_table(df, date, telescope_type=None):
 
     #convert the dict to a dataframe and save as a csv
 
-    df = pd.DataFrame(new_dict)
-    df.to_csv(f"output/catalog_{telescope_type}.csv", index=False)
+    if split_table == 1:
+        df = pd.DataFrame(new_dict)
+        df.to_csv(f"output/catalog_{telescope_type}.csv", index=False)
+    elif split_table == 2:
+        #we need to split this into "split_table" number of different tables in an alternating way
+        df = pd.DataFrame(new_dict)
+
+        df_1 = df.iloc[::2].copy() #all events
+        df_2 = df.iloc[1::2].copy() #all odds
+
+        df_1.to_csv(f"output/catalog_{telescope_type}_1.csv", index=False)
+        df_2.to_csv(f"output/catalog_{telescope_type}_2.csv", index=False)
+    else:
+        print("Why so much splitting hehe :)")
 
     return
 
  
 def main_scheduler(date, start_time, end_time, num_cluster=0, num_nebula=0, num_galaxy=0, num_planet=0, num_point=0,
-                    telescope_objs_dict=None,min_altitude=30):
+                    telescope_objs_dict=None,min_altitude=30, split_table=1):
     '''
     Main function used to schedule targets for a given telescope and time information
 
@@ -461,7 +474,7 @@ def main_scheduler(date, start_time, end_time, num_cluster=0, num_nebula=0, num_
 
     # obj_coords = resolve_object_coords(telescope_objs_dict)
 
-    tot_objects = num_cluster + num_nebula + num_planet + num_galaxy
+    tot_objects = num_cluster + num_nebula + num_planet + num_galaxy + num_point
     #the total number of objects will determine how many minutes per object
 
     # total observing window in minutes
@@ -553,6 +566,7 @@ def main_scheduler(date, start_time, end_time, num_cluster=0, num_nebula=0, num_
 
     ##NOW FIGURE OUT THE OPTIMAL ORDERING!
 
+
     #Build intervals
     intervals = []
     current_start = start_dt
@@ -578,7 +592,7 @@ def main_scheduler(date, start_time, end_time, num_cluster=0, num_nebula=0, num_
 
     ##format the table!
 
-    format_table(df_schedule, date, telescope_objs_dict["telescope_type"])
+    format_table(df_schedule, date, telescope_objs_dict["telescope_type"], split_table=split_table)
 
     ##return stuff
 

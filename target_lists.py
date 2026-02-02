@@ -5,7 +5,7 @@
 objects_24inch = {"cluster":["M15", "M3", "M2", "M11", "M44", "NGC457", "M45","NGC869"],
                   "galaxy":[],
                   "nebula":["M57","M42"],
-                  "planet":["saturn"],
+                  "planet":["saturn", "jupiter"],
                   "point":[],
                   "telescope_type": "24inch"
                  }
@@ -36,14 +36,21 @@ objects_5SE = {"cluster":["M45","NGC457"],
                 "telescope_type": "5SE"
                }
 
-# 10Dob = M42, HIP 91919, HIP 92728, HIP 50583, HIP 65378, HIP 95947, Venus, Mars, Jupiter, Saturn, Moon
+
+objects_10Dob = {"cluster":["M45"],
+                "nebula":["M42"],
+                "galaxy":[],
+                "point":["HIP91919", "HIP92728", "HIP50583", "HIP65378", "HIP95947", "HIP26549", "HIP36850"],
+                "planet":["moon", "venus", "mars", "saturn", "jupiter"],
+                "telescope_type":"10Dob"
+}
 
 
 #### OBJECT TYPE INFO
 
 cluster_types = {
-    "Open Cluster": ["M11","M52","M37","M45"],
-    "Globular Cluster": ["M15","M13","M92","M5","M3","M2","M10","M53","NGC5897","NGC5466","NGC457","M19","M22"]
+    "Open Cluster": ["M11","M52","M37","M45", "M44", "NGC869","NGC457"],
+    "Globular Cluster": ["M15","M13","M92","M5","M3","M2","M10","M53","NGC5897","NGC5466","M19","M22"]
 }
 
 cluster_type_mapping = {
@@ -63,14 +70,18 @@ outreach_link = {
 
 common_name = {
     "M45":"Pleiades",
+    "M44": "Beehive Cluster",
+    "NGC869": "Double Cluster",
     "M42": "Orion Nebula",
     "NGC6946": "Firework's Galaxy",
     "M33": "Triangulum Galaxy",
     "M1": "Crab Nebula",
-    "NGC457": "Dragonfly cluster",
+    "NGC457": "Owl/Dragonfly cluster",
     "NGC7023": "Iris Nebula",
     "M82": "Cigar Galaxy",
     "M31": "Andromeda Galaxy",
     "NGC2024": "Flame Nebula",
-    "M81":"Bode's Galaxy"
+    "M81":"Bode's Galaxy",
+    "HIP26549": "Sigma-Orionis",
+    "HIP36850": "Castor"
 }
