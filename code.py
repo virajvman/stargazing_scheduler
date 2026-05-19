@@ -19,7 +19,7 @@ pacific = pytz.timezone("US/Pacific")
 palo_alto_location = EarthLocation(
     lat=37.4419 * u.deg,
     lon=-122.1430 * u.deg,
-    height=50 * u.m # assuming some random small height
+    height=90 * u.m # observatory height above sea level
 )
 
 def resolve_objects(object_names):
