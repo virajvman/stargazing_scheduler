@@ -1,5 +1,6 @@
 import numpy as np
 import pandas as pd
+import time
 from datetime import timedelta
 
 from astropy.time import Time
@@ -22,28 +23,169 @@ palo_alto_location = EarthLocation(
     height=90 * u.m # observatory height above sea level
 )
 
-def resolve_objects(object_names):
+def _is_simbad_transient_error(exc):
     """
-    For extra-galactic objects
+    Heuristic: is this SIMBAD exception likely transient (network/capabilities/cache)?
+    """
+    msg = str(exc).lower()
+    transient_markers = [
+        "capabilities endpoint",
+        "remote end closed",
+        "connection aborted",
+        "connection reset",
+        "timed out",
+        "timeout",
+        "503",
+        "502",
+        "504",
+        "temporarily unavailable",
+    ]
+    return any(m in msg for m in transient_markers)
+
+
+def _try_clear_simbad_cache():
+    """
+    Try to clear the astroquery SIMBAD cache. Available in newer astroquery versions.
+    Silently no-ops on older versions.
+    """
+    try:
+        Simbad.clear_cache()
+    except Exception:
+        pass
+
+
+def _is_masked_or_nan(value):
+    """
+    Detect masked/NaN values returned by SIMBAD for unresolvable names.
+    """
+    #Astropy masked constant
+    try:
+        from astropy.utils.masked import Masked  # type: ignore
+        if isinstance(value, Masked) and getattr(value, "mask", False):
+            return True
+    except Exception:
+        pass
+    #numpy.ma masked element
+    try:
+        import numpy.ma as ma
+        if value is ma.masked:
+            return True
+    except Exception:
+        pass
+    #NaN floats
+    try:
+        if isinstance(value, float) and np.isnan(value):
+            return True
+        farr = np.asarray(value, dtype=float)
+        if farr.size == 1 and np.isnan(farr.item()):
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def _coord_from_simbad_row(row):
+    """
+    Build a SkyCoord from a SIMBAD result row, accepting either the new
+    'ra'/'dec' (decimal degrees) columns or the legacy 'RA'/'DEC' sexagesimal columns.
+
+    Raises ValueError if the row's RA/Dec is masked/NaN, so callers can treat
+    that exactly like the original "could not resolve" case (name not added).
+    """
+    if "ra" in row.colnames and "dec" in row.colnames:
+        ra_val = row["ra"]
+        dec_val = row["dec"]
+        if _is_masked_or_nan(ra_val) or _is_masked_or_nan(dec_val):
+            raise ValueError("SIMBAD returned masked/NaN RA/Dec (unresolvable name)")
+        return SkyCoord(ra=ra_val * u.deg, dec=dec_val * u.deg, frame="icrs")
+    if "RA" in row.colnames and "DEC" in row.colnames:
+        ra_val = row["RA"]
+        dec_val = row["DEC"]
+        if _is_masked_or_nan(ra_val) or _is_masked_or_nan(dec_val):
+            raise ValueError("SIMBAD returned masked/NaN RA/Dec (unresolvable name)")
+        return SkyCoord(ra=ra_val, dec=dec_val, unit=(u.hourangle, u.deg), frame="icrs")
+    raise KeyError("SIMBAD result row has no recognized RA/Dec columns")
+
+
+def resolve_objects(object_names, max_retries=3, retry_wait_s=2.0):
+    """
+    For extra-galactic objects.
     Resolve object names to SkyCoord using SIMBAD.
+
+    Resilient to transient SIMBAD outages (e.g. "No working capabilities endpoint
+    provided"): tries a single batched query first, then falls back to per-name
+    queries with retries and cache-clearing.
+
     Returns dict: name -> SkyCoord
     """
     coords = {}
+    if len(object_names) == 0:
+        return coords
 
-    for name in object_names:
+    #fast path: one batched call to SIMBAD instead of N
+    for attempt in range(max_retries):
         try:
-            result = Simbad.query_object(name)
-            if result is None:
-                print(f"Could not resolve: {name}")
-                continue
-                                
-            ra = result["ra"][0]
-            dec = result["dec"][0]
-            coord = SkyCoord(ra=ra*u.deg, dec=dec*u.deg, frame="icrs")
-            coords[name] = coord
+            table = Simbad.query_objects(list(object_names))
+            if table is not None and len(table) > 0:
+                #map names back; SIMBAD returns rows in input order, with a
+                #user_specified_id / typed_id / MAIN_ID column depending on version
+                id_col = None
+                for candidate in ("user_specified_id", "USER_SPECIFIED_ID",
+                                  "typed_id", "TYPED_ID", "MAIN_ID", "main_id"):
+                    if candidate in table.colnames:
+                        id_col = candidate
+                        break
 
+                if id_col is None and len(table) == len(object_names):
+                    #fallback: assume same order as the input list
+                    for i, name in enumerate(object_names):
+                        try:
+                            coords[name] = _coord_from_simbad_row(table[i])
+                        except Exception:
+                            pass
+                else:
+                    for i, name in enumerate(object_names):
+                        try:
+                            row = table[i] if (id_col is None) else None
+                            if id_col is not None:
+                                mask = [str(v).strip() == name for v in table[id_col]]
+                                if any(mask):
+                                    row = table[mask][0]
+                            if row is not None:
+                                coords[name] = _coord_from_simbad_row(row)
+                        except Exception:
+                            pass
+            break  #batched call succeeded (even if some names didn't resolve)
         except Exception as e:
-            print(f"Error resolving {name}: {e}")
+            if _is_simbad_transient_error(e) and attempt < max_retries - 1:
+                print(f"SIMBAD batched query failed (transient: {e}); clearing cache and retrying...")
+                _try_clear_simbad_cache()
+                time.sleep(retry_wait_s)
+                continue
+            print(f"SIMBAD batched query failed ({e}); falling back to per-name queries.")
+            break
+
+    #for anything still unresolved, fall back to per-name queries with retries
+    for name in object_names:
+        if name in coords:
+            continue
+        for attempt in range(max_retries):
+            try:
+                result = Simbad.query_object(name)
+                if result is None:
+                    print(f"Could not resolve: {name}")
+                    break
+                coords[name] = _coord_from_simbad_row(result[0])
+                break
+            except Exception as e:
+                if _is_simbad_transient_error(e) and attempt < max_retries - 1:
+                    print(f"Transient SIMBAD error resolving {name} (attempt {attempt+1}/{max_retries}): {e}. "
+                          f"Clearing cache and retrying in {retry_wait_s}s...")
+                    _try_clear_simbad_cache()
+                    time.sleep(retry_wait_s)
+                    continue
+                print(f"Error resolving {name}: {e}")
+                break
 
     return coords
 
@@ -372,7 +514,79 @@ def dt_to_timestr(dt):
 
 
 
-def format_table(df, date, telescope_type=None, split_table=1):
+def _build_row_dict(name_i, obj_type, elev, trajectory, interval_str, date_splits):
+    '''
+    Build a single row of the formatted catalog as a dict matching the standard columns.
+    Used for both main schedule rows and alternate target rows.
+    '''
+    row = {}
+
+    #object name (common name if available, else catalog name)
+    if name_i in common_name:
+        row["Name"] = common_name[name_i]
+    else:
+        row["Name"] = name_i
+    row["Catalog Name"] = name_i
+
+    #object type (resolve cluster sub-type if needed)
+    if obj_type == "cluster":
+        row["Object Type"] = cluster_type_mapping[name_i]
+    else:
+        row["Object Type"] = obj_type
+
+    row["Elevation"] = elev
+    row["Trajectory"] = trajectory
+    row["Interval"] = interval_str
+
+    row["Visibility Link"] = create_observability_link(name_i, date_splits[2], date_splits[1], date_splits[0])
+
+    #outreach link by resolved object type
+    if row["Object Type"] == "Open Cluster" or row["Object Type"] == "Globular Cluster":
+        row["Outreach Info"] = outreach_link[row["Object Type"]]
+    elif row["Object Type"] == "galaxy":
+        row["Outreach Info"] = outreach_link["galaxy"]
+    elif row["Object Type"] == "planet":
+        row["Outreach Info"] = outreach_link["planet"]
+    elif row["Object Type"] == "nebula":
+        row["Outreach Info"] = outreach_link["nebula"]
+    else:
+        row["Outreach Info"] = ""
+
+    return row
+
+
+def _append_alternates(new_dict, df_alternates, date_splits, columns):
+    '''
+    Append an 'Alternate Targets' separator row plus one row per alternate target
+    to the in-progress new_dict mapping (column -> list of values).
+    '''
+    if df_alternates is None or len(df_alternates) == 0:
+        return
+
+    #separator row: Name = "Alternate Targets", all other columns empty
+    for ci in columns:
+        if ci == "Name":
+            new_dict[ci].append("Alternate Targets")
+        else:
+            new_dict[ci].append("")
+
+    #one row per alternate
+    for i, name_i in enumerate(df_alternates["object"].tolist()):
+        path_i = df_alternates["path"].iloc[i]
+        interval_str = "earlier in the night" if path_i == "falling" else "later at night"
+        row = _build_row_dict(
+            name_i,
+            df_alternates["type"].iloc[i],
+            df_alternates["elev"].iloc[i],
+            path_i,
+            interval_str,
+            date_splits,
+        )
+        for ci in columns:
+            new_dict[ci].append(row[ci])
+
+
+def format_table(df, date, telescope_type=None, split_table=1, df_alternates=None):
     '''
     In this function, we format the table so we can save it as a csv file
     '''
@@ -382,64 +596,44 @@ def format_table(df, date, telescope_type=None, split_table=1):
     #the columns in the formatted catalog we want!
     columns = ["Name", "Object Type", "Elevation", "Trajectory", "Catalog Name", "Outreach Info", "Interval", "Visibility Link"]
 
-    new_dict = {}
+    new_dict = {ci: [] for ci in columns}
 
-    for ci in columns:
-        new_dict[ci] = []
+    #build rows for the main schedule
+    for i, name_i in enumerate(df["object"].tolist()):
+        interval_str = dt_to_timestr(df["start"][i]) + "-" + dt_to_timestr(df["end"][i])
+        row = _build_row_dict(
+            name_i,
+            df["type"][i],
+            df["elev"][i],
+            df["path"][i],
+            interval_str,
+            date_splits,
+        )
+        for ci in columns:
+            new_dict[ci].append(row[ci])
 
-    for i,name_i in enumerate(df["object"].tolist()):
-        #get the object names
-        if name_i in common_name:
-            new_dict["Name"].append(common_name[name_i])
-        else:
-            new_dict["Name"].append(name_i)
-        new_dict["Catalog Name"].append(name_i)
-
-        #get the object types
-        if df["type"][i] == "cluster":
-            new_dict["Object Type"].append(cluster_type_mapping[name_i])
-        else:
-            new_dict["Object Type"].append(df["type"][i])
-
-        #get the elevation and tracjectories
-        new_dict["Elevation"].append( df["elev"][i] )
-        new_dict["Trajectory"].append( df["path"][i] )
-
-        #get the interval
-        new_dict["Interval"].append( dt_to_timestr(df["start"][i]) + "-" + dt_to_timestr(df["end"][i]) )
-
-        #get the visibility link
-        link_i = create_observability_link(name_i, date_splits[2], date_splits[1], date_splits[0])
-        new_dict["Visibility Link"].append(link_i)
-
-        #get the Outreach info
-        if new_dict["Object Type"][i] == "Open Cluster" or new_dict["Object Type"][i] == "Globular Cluster":
-            new_dict["Outreach Info"].append(outreach_link[new_dict["Object Type"][i] ])
-
-        elif new_dict["Object Type"][i] == "galaxy":
-            new_dict["Outreach Info"].append(outreach_link["galaxy"])
-
-        elif new_dict["Object Type"][i] == "planet":
-            new_dict["Outreach Info"].append(outreach_link["planet"])
-
-        elif new_dict["Object Type"][i] == "nebula":
-            new_dict["Outreach Info"].append(outreach_link["nebula"])
-
-        else:
-            new_dict["Outreach Info"].append("")
-
+    #track how many rows belong to the main schedule (used for split_table=2)
+    n_main = len(new_dict["Name"])
 
     #convert the dict to a dataframe and save as a csv
-
     if split_table == 1:
-        df = pd.DataFrame(new_dict)
-        df.to_csv(f"output/catalog_{telescope_type}.csv", index=False)
+        _append_alternates(new_dict, df_alternates, date_splits, columns)
+        df_out = pd.DataFrame(new_dict)
+        df_out.to_csv(f"output/catalog_{telescope_type}.csv", index=False)
     elif split_table == 2:
-        #we need to split this into "split_table" number of different tables in an alternating way
-        df = pd.DataFrame(new_dict)
+        #split only the main rows in an alternating way; both halves get the same alternates block
+        df_main = pd.DataFrame({ci: new_dict[ci][:n_main] for ci in columns})
 
-        df_1 = df.iloc[::2].copy() #all events
-        df_2 = df.iloc[1::2].copy() #all odds
+        df_1 = df_main.iloc[::2].copy() #even-indexed
+        df_2 = df_main.iloc[1::2].copy() #odd-indexed
+
+        if df_alternates is not None and len(df_alternates) > 0:
+            alt_dict = {ci: [] for ci in columns}
+            _append_alternates(alt_dict, df_alternates, date_splits, columns)
+            df_alt_block = pd.DataFrame(alt_dict)
+
+            df_1 = pd.concat([df_1, df_alt_block], ignore_index=True)
+            df_2 = pd.concat([df_2, df_alt_block], ignore_index=True)
 
         df_1.to_csv(f"output/catalog_{telescope_type}_1.csv", index=False)
         df_2.to_csv(f"output/catalog_{telescope_type}_2.csv", index=False)
@@ -564,6 +758,37 @@ def main_scheduler(date, start_time, end_time, num_cluster=0, num_nebula=0, num_
     #list of chosen object types
     chosen_types =  ["planet"]*len(best_planet) + ["cluster"]*len(best_cluster) + ["nebula"]*len(best_nebula) + ["galaxy"]*len(best_galaxy) + ["point"]*len(best_point)
 
+    ##Build alternates: top 3 unchosen observable objects ranked by max altitude across all classes
+    alternates_pool = []
+    for class_i in object_classes:
+        df_class_i = all_dfs[class_i]
+        alts_class_i = all_alts[class_i]
+        names_class_i = df_class_i["name"].tolist()
+        max_alts_class_i = df_class_i["max_altitude_deg"].tolist()
+        for j, name_j in enumerate(names_class_i):
+            if name_j in chosen_objects:
+                continue
+            alternates_pool.append((name_j, class_i, max_alts_class_i[j], alts_class_i[j]))
+
+    #sort by max altitude descending and keep top 3
+    alternates_pool.sort(key=lambda x: x[2], reverse=True)
+    alternates_pool = alternates_pool[:3]
+
+    #build a small df with the same column shape that format_table expects (minus start/end)
+    alt_rows = []
+    for name_j, class_j, max_alt_j, alt_curve_j in alternates_pool:
+        path_j = "rising" if alt_curve_j[-1] > alt_curve_j[0] else "falling"
+        alt_rows.append({
+            'object': name_j,
+            'type': class_j,
+            'elev': int(round(max_alt_j)),
+            'path': path_j,
+        })
+    df_alternates = pd.DataFrame(alt_rows, columns=['object', 'type', 'elev', 'path'])
+
+    if len(df_alternates) > 0:
+        print(f"Alternates: {df_alternates['object'].tolist()}")
+
     ##NOW FIGURE OUT THE OPTIMAL ORDERING!
 
 
@@ -592,13 +817,14 @@ def main_scheduler(date, start_time, end_time, num_cluster=0, num_nebula=0, num_
 
     ##format the table!
 
-    format_table(df_schedule, date, telescope_objs_dict["telescope_type"], split_table=split_table)
+    format_table(df_schedule, date, telescope_objs_dict["telescope_type"], split_table=split_table, df_alternates=df_alternates)
 
     ##return stuff
 
     return_dict = {"time_local_datetimes": time_local_datetimes,
                     "best_cluster": best_cluster, "best_nebula": best_nebula, "best_planet": best_planet, "best_galaxy": best_galaxy, "best_point": best_point,
-                    "df_schedule": df_schedule  }
+                    "df_schedule": df_schedule,
+                    "df_alternates": df_alternates  }
 
     for class_i in object_classes:
         return_dict["df_" + class_i] = all_dfs[class_i]

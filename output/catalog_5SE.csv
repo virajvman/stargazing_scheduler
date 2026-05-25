@@ -1,5 +1,9 @@
 Name,Object Type,Elevation,Trajectory,Catalog Name,Outreach Info,Interval,Visibility Link
-saturn,planet,34,falling,saturn,https://docs.google.com/document/d/1gFdZzrRGJdO8h30Y4WZMfgOvV_Y-Xj6xaUKWY6pTceE/edit?tab=t.0#heading=h.pdu2bqr8e9z9,6:30-7:00,https://in-the-sky.org/data/object.php?id=saturn&day=20&month=01&year=2026
-Pleiades,Open Cluster,74,rising,M45,https://docs.google.com/document/d/1gFdZzrRGJdO8h30Y4WZMfgOvV_Y-Xj6xaUKWY6pTceE/edit?tab=t.0#heading=h.fdkwv3g7vf4i,7:00-7:30,https://in-the-sky.org/data/object.php?id=M45&day=20&month=01&year=2026
-jupiter,planet,40,rising,jupiter,https://docs.google.com/document/d/1gFdZzrRGJdO8h30Y4WZMfgOvV_Y-Xj6xaUKWY6pTceE/edit?tab=t.0#heading=h.pdu2bqr8e9z9,7:30-8:00,https://in-the-sky.org/data/object.php?id=jupiter&day=20&month=01&year=2026
-Orion Nebula,nebula,42,rising,M42,https://docs.google.com/document/d/1gFdZzrRGJdO8h30Y4WZMfgOvV_Y-Xj6xaUKWY6pTceE/edit?tab=t.0#heading=h.hfgmj1uho9ly,8:00-8:30,https://in-the-sky.org/data/object.php?id=M42&day=20&month=01&year=2026
+HIP65378,point,72,rising,HIP65378,,9:30-10:00,https://in-the-sky.org/data/object.php?id=HIP65378&day=01&month=06&year=2026
+HIP50583,point,41,falling,HIP50583,,10:00-10:30,https://in-the-sky.org/data/object.php?id=HIP50583&day=01&month=06&year=2026
+Hercules Cluster,Globular Cluster,61,rising,M13,https://docs.google.com/document/d/1gFdZzrRGJdO8h30Y4WZMfgOvV_Y-Xj6xaUKWY6pTceE/edit?tab=t.0#heading=h.7ctyu5s0fb9n,10:30-11:00,https://in-the-sky.org/data/object.php?id=M13&day=01&month=06&year=2026
+Cat's Eye Nebula,nebula,50,rising,NGC6543,https://docs.google.com/document/d/1gFdZzrRGJdO8h30Y4WZMfgOvV_Y-Xj6xaUKWY6pTceE/edit?tab=t.0#heading=h.hfgmj1uho9ly,11:00-11:30,https://in-the-sky.org/data/object.php?id=NGC6543&day=01&month=06&year=2026
+Alternate Targets,,,,,,,
+M92,Globular Cluster,64,rising,M92,https://docs.google.com/document/d/1gFdZzrRGJdO8h30Y4WZMfgOvV_Y-Xj6xaUKWY6pTceE/edit?tab=t.0#heading=h.7ctyu5s0fb9n,later at night,https://in-the-sky.org/data/object.php?id=M92&day=01&month=06&year=2026
+M5,Globular Cluster,54,rising,M5,https://docs.google.com/document/d/1gFdZzrRGJdO8h30Y4WZMfgOvV_Y-Xj6xaUKWY6pTceE/edit?tab=t.0#heading=h.7ctyu5s0fb9n,later at night,https://in-the-sky.org/data/object.php?id=M5&day=01&month=06&year=2026
+HIP91919,point,47,rising,HIP91919,,later at night,https://in-the-sky.org/data/object.php?id=HIP91919&day=01&month=06&year=2026

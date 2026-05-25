@@ -1,4 +1,5 @@
 Name,Object Type,Elevation,Trajectory,Catalog Name,Outreach Info,Interval,Visibility Link
-Pleiades,Open Cluster,72,rising,M45,https://docs.google.com/document/d/1gFdZzrRGJdO8h30Y4WZMfgOvV_Y-Xj6xaUKWY6pTceE/edit?tab=t.0#heading=h.fdkwv3g7vf4i,6:50-7:10,https://in-the-sky.org/data/object.php?id=M45&day=20&month=01&year=2026
-Castor,point,40,rising,HIP36850,,7:30-7:50,https://in-the-sky.org/data/object.php?id=HIP36850&day=20&month=01&year=2026
-Orion Nebula,nebula,43,rising,M42,https://docs.google.com/document/d/1gFdZzrRGJdO8h30Y4WZMfgOvV_Y-Xj6xaUKWY6pTceE/edit?tab=t.0#heading=h.hfgmj1uho9ly,8:10-8:30,https://in-the-sky.org/data/object.php?id=M42&day=20&month=01&year=2026
+HIP50583,point,41,falling,HIP50583,,10:00-10:30,https://in-the-sky.org/data/object.php?id=HIP50583&day=01&month=06&year=2026
+HIP92728,point,42,rising,HIP92728,,11:00-11:30,https://in-the-sky.org/data/object.php?id=HIP92728&day=01&month=06&year=2026
+Alternate Targets,,,,,,,
+HIP95947,point,34,rising,HIP95947,,later at night,https://in-the-sky.org/data/object.php?id=HIP95947&day=01&month=06&year=2026

@@ -1,3 +1,8 @@
 Name,Object Type,Elevation,Trajectory,Catalog Name,Outreach Info,Interval,Visibility Link
-Triangulum Galaxy,galaxy,72,falling,M33,https://docs.google.com/document/d/1gFdZzrRGJdO8h30Y4WZMfgOvV_Y-Xj6xaUKWY6pTceE/edit?tab=t.0#heading=h.gvsja0wbdv2f,6:30-7:30,https://in-the-sky.org/data/object.php?id=M33&day=20&month=01&year=2026
-Crab Nebula,nebula,63,rising,M1,https://docs.google.com/document/d/1gFdZzrRGJdO8h30Y4WZMfgOvV_Y-Xj6xaUKWY6pTceE/edit?tab=t.0#heading=h.hfgmj1uho9ly,7:30-8:30,https://in-the-sky.org/data/object.php?id=M1&day=20&month=01&year=2026
+M51,galaxy,80,rising,M51,https://docs.google.com/document/d/1gFdZzrRGJdO8h30Y4WZMfgOvV_Y-Xj6xaUKWY6pTceE/edit?tab=t.0#heading=h.gvsja0wbdv2f,9:30-10:10,https://in-the-sky.org/data/object.php?id=M51&day=01&month=06&year=2026
+Pinwheel Galaxy,galaxy,73,falling,M101,https://docs.google.com/document/d/1gFdZzrRGJdO8h30Y4WZMfgOvV_Y-Xj6xaUKWY6pTceE/edit?tab=t.0#heading=h.gvsja0wbdv2f,10:10-10:50,https://in-the-sky.org/data/object.php?id=M101&day=01&month=06&year=2026
+Ring Nebula,nebula,39,rising,M57,https://docs.google.com/document/d/1gFdZzrRGJdO8h30Y4WZMfgOvV_Y-Xj6xaUKWY6pTceE/edit?tab=t.0#heading=h.hfgmj1uho9ly,10:50-11:30,https://in-the-sky.org/data/object.php?id=M57&day=01&month=06&year=2026
+Alternate Targets,,,,,,,
+M3,Globular Cluster,81,falling,M3,https://docs.google.com/document/d/1gFdZzrRGJdO8h30Y4WZMfgOvV_Y-Xj6xaUKWY6pTceE/edit?tab=t.0#heading=h.7ctyu5s0fb9n,earlier in the night,https://in-the-sky.org/data/object.php?id=M3&day=01&month=06&year=2026
+M92,Globular Cluster,64,rising,M92,https://docs.google.com/document/d/1gFdZzrRGJdO8h30Y4WZMfgOvV_Y-Xj6xaUKWY6pTceE/edit?tab=t.0#heading=h.7ctyu5s0fb9n,later at night,https://in-the-sky.org/data/object.php?id=M92&day=01&month=06&year=2026
+Fireworks Galaxy,galaxy,35,rising,NGC6946,https://docs.google.com/document/d/1gFdZzrRGJdO8h30Y4WZMfgOvV_Y-Xj6xaUKWY6pTceE/edit?tab=t.0#heading=h.gvsja0wbdv2f,later at night,https://in-the-sky.org/data/object.php?id=NGC6946&day=01&month=06&year=2026
