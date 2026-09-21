@@ -169,6 +169,17 @@ def _coupling_report(payload):
             continue
 
         n = min(len(payload["telescopes"][l]["rows"]) for l in labels)
+
+        #With more telescopes than categories in the sky, "every telescope on a
+        #different category" is arithmetically impossible, so score against the
+        #best a night allows rather than against len(labels) -- otherwise adding a
+        #sixth portable makes a perfectly good schedule report zero.
+        reachable = set()
+        for l in labels:
+            reachable |= {c for c, cnt in payload["telescopes"][l]["observable"].items()
+                          if cnt > 0}
+        best_possible = min(len(labels), len(reachable)) if reachable else 1
+
         matched = 0
         counted = 0
         for k in range(n):
@@ -181,12 +192,13 @@ def _coupling_report(payload):
             if g["coupling"] == "match":
                 matched += 1 if distinct == 1 else 0
             elif g["coupling"] == "diverse":
-                matched += 1 if distinct == len(classes) else 0
+                matched += 1 if distinct >= best_possible else 0
 
         if g["coupling"] == "match":
             goal = "all telescopes on the same category"
         elif g["coupling"] == "diverse":
-            goal = "every telescope on a different category"
+            goal = ("every telescope on a different category" if best_possible >= len(labels)
+                    else f"as many different categories as the sky allows ({best_possible})")
         else:
             continue
 
