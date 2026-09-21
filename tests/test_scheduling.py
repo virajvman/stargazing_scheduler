@@ -111,8 +111,8 @@ def test_no_target_twice_at_once():
           "; ".join(clashes[:3]))
 
 
-def test_dome_matching_and_portable_variety():
-    print("\nrules 2 and 3: domes match, portables differ")
+def test_groups_stay_varied():
+    print("\nrules 2 and 3: each group shows different categories at once")
     stats = {"match": [0, 0], "diverse": [0, 0]}
     for date, out in nights():
         for g in out["groups"]:
@@ -127,36 +127,72 @@ def test_dome_matching_and_portable_variety():
                 stats[g["coupling"]][0] += want
                 stats[g["coupling"]][1] += 1
 
-    m_hit, m_tot = stats["match"]
-    d_hit, d_tot = stats["diverse"]
-    print(f"        domes matched {m_hit}/{m_tot}, portables varied {d_hit}/{d_tot}")
+    hit, tot = stats["diverse"]
+    print(f"        telescopes on distinct categories in {hit}/{tot} slots")
 
-    #Thresholds are deliberately below what we measure now. Perfect compliance is
-    #impossible --- a telescope with no galaxies cannot match one showing a galaxy
-    #--- so these guard against a real regression, not against the sky.
-    check("domes match in most slots", m_tot and m_hit / m_tot >= 0.75,
-          f"{m_hit}/{m_tot}")
-    check("portables differ in most slots", d_tot and d_hit / d_tot >= 0.80,
-          f"{d_hit}/{d_tot}")
+    #Perfect compliance is impossible: a group with more telescopes than
+    #categories up tonight must overlap. The threshold guards a regression.
+    check("groups stay varied in most slots", tot and hit / tot >= 0.80, f"{hit}/{tot}")
 
-    #coupling must beat not coupling, otherwise it is doing nothing
-    loose = [{"name": "Dome telescopes",
-              "telescopes": [t["label"] for t in T.build_roster() if t["kind"] == "dome"],
-              "coupling": "none"}]
+    #and the coupling must be doing the work, not luck
+    loose = [dict(g, coupling="none") for g in T.default_groups(T.build_roster())]
     none_hit = none_tot = 0
     for date in DATES:
         out = sched.schedule_night(date, "20:00", "22:00", roster=T.build_roster(),
                                    groups=loose, verbose=False)
-        g = out["groups"][0]
-        per = {l: rows_of(out, l) for l in g["telescopes"]}
-        n = min(len(v) for v in per.values())
-        for k in range(n):
-            classes = [per[l][k]["type"] for l in g["telescopes"]]
-            none_hit += len(set(classes)) == 1
-            none_tot += 1
-    print(f"        with coupling off, domes would match {none_hit}/{none_tot}")
-    check("matching beats not matching", m_hit / m_tot > none_hit / none_tot,
-          f"coupled {m_hit}/{m_tot} vs uncoupled {none_hit}/{none_tot}")
+        for g in out["groups"]:
+            per = {l: rows_of(out, l) for l in g["telescopes"]}
+            if len(per) < 2:
+                continue
+            n = min(len(v) for v in per.values())
+            for k in range(n):
+                classes = [per[l][k]["type"] for l in g["telescopes"]]
+                none_hit += len(set(classes)) == len(classes)
+                none_tot += 1
+    print(f"        with coupling off, that would be {none_hit}/{none_tot}")
+    check("coupling beats no coupling", hit / tot > none_hit / none_tot,
+          f"coupled {hit}/{tot} vs uncoupled {none_hit}/{none_tot}")
+
+
+def test_dome_visitor_sees_variety():
+    """The point of the dome rule: one dome now, the other later, not the same thing.
+
+    This is the metric the dome setting is actually chosen on, so it is what the
+    test guards -- not whether the domes happen to match each other.
+    """
+    print("\na visitor who sees one dome, then the other later")
+    domes = [t["label"] for t in T.build_roster() if t["kind"] == "dome"]
+    if len(domes) < 2:
+        return
+
+    same = same_n = 0
+    for date, out in nights():
+        a = [r["type"] for r in rows_of(out, domes[0])]
+        b = [r["type"] for r in rows_of(out, domes[1])]
+        for t1 in range(len(a)):
+            for t2 in range(len(b)):
+                if t1 == t2:
+                    continue
+                same_n += 1
+                same += a[t1] == b[t2]
+
+    rate = 100 * same / same_n
+    print(f"        lands on the same category {rate:.0f}% of the time")
+    #~25-33% is what chance alone would give, and forcing the domes to match
+    #measured 26%. Anything at or above that means the setting stopped helping.
+    check("a dome visitor rarely sees a repeated category", rate <= 22.0,
+          f"{rate:.0f}% --- at or above chance, so the dome coupling is not helping")
+
+    #the 0.7 m is the only dome that can do galaxies; it should be using that
+    gal = gal_n = 0
+    for date, out in nights():
+        seq = [r["type"] for r in rows_of(out, "07m")]
+        gal_n += len(seq)
+        gal += seq.count("galaxy")
+    share = 100 * gal / gal_n
+    print(f"        the 0.7 m spends {share:.0f}% of its slots on galaxies")
+    check("the long-exposure dome still gets to do galaxies", share >= 35.0,
+          f"{share:.0f}% --- matching the domes drops this to ~12%")
 
 
 def test_never_hard_fails():
@@ -231,7 +267,8 @@ def main():
     test_catalog_covers_every_target(catalog)
     test_zenith_cap()
     test_no_target_twice_at_once()
-    test_dome_matching_and_portable_variety()
+    test_groups_stay_varied()
+    test_dome_visitor_sees_variety()
     test_never_hard_fails()
     test_contended_object_is_not_double_booked()
     test_slot_recommendation()

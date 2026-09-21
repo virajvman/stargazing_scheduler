@@ -124,16 +124,25 @@ A *model* is a kind of telescope; an *instance* is one of them on a given night.
 Some nights there are two Dobs, some nights one, so the roster is built at
 schedule time from a {model: count} dict via build_roster().
 
-`kind` drives the default category coupling (see code.schedule_group):
+`kind` drives the default category coupling (see code.schedule_group). Both
+default to "diverse" -- different categories at the same time -- for opposite
+reasons:
 
-  "dome"     -> a visitor realistically only reaches ONE dome telescope per
-                session, so the domes should show the SAME category at the same
-                time. Whichever dome you walk into, you work through clusters,
-                then nebulae, then galaxies -- instead of seeing a cluster in one
-                dome and, an hour later, another cluster in the other.
-  "portable" -> visitors walk the whole portable line in one go, so the portables
-                should show DIFFERENT categories at the same time: maximum
-                variety in the few minutes someone spends at the tables.
+  "portable" -> visitors walk the whole portable line in one go, so showing
+                different categories at once gives them maximum variety in the
+                few minutes they spend at the tables.
+  "dome"     -> the two domes are different instruments: the 24-inch is an
+                eyepiece, the 0.7 m takes long exposures, so they are good at
+                different things and their lists reflect that (the 24-inch owns
+                no galaxies). Keeping them apart lets each play to its strength,
+                and a visitor who catches one dome and later the other still sees
+                variety -- measurably more of it than when the domes are forced
+                to match, because matching confines both to the narrow overlap
+                between their lists. See the note in code.schedule_group.
+
+Variety for a visitor who stays at one dome comes from
+code.SEQUENCE_VARIETY_PENALTY, which keeps a telescope from showing the same
+category twice in a row.
 
 `max_altitude` caps how close to the zenith a telescope will be pointed. The
 eVscopes track poorly overhead, so they stop at 80 deg.
@@ -266,7 +275,7 @@ def build_roster(counts: dict[str, int] | None = None) -> list[dict]:
 
 
 def default_groups(roster: list[dict] | None = None) -> list[dict]:
-    """Split a roster into the two coupled groups: domes matched, portables varied."""
+    """Split a roster into the two coupled groups, each kept varied within itself."""
     if roster is None:
         roster = build_roster()
 
@@ -274,7 +283,7 @@ def default_groups(roster: list[dict] | None = None) -> list[dict]:
     dome = [t["label"] for t in roster if t["kind"] == "dome"]
     portable = [t["label"] for t in roster if t["kind"] == "portable"]
     if dome:
-        groups.append({"name": "Dome telescopes", "telescopes": dome, "coupling": "match"})
+        groups.append({"name": "Dome telescopes", "telescopes": dome, "coupling": "diverse"})
     if portable:
         groups.append({"name": "Portable telescopes", "telescopes": portable, "coupling": "diverse"})
     return groups

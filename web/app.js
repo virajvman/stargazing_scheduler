@@ -22,9 +22,11 @@ const state = {
 };
 
 /* The two ways visitors move through the observatory. Defaults come straight
-   from the reasoning in target_lists.py. */
+   from the reasoning in target_lists.py: both groups stay varied within
+   themselves, the portables because visitors see them all at once, the domes
+   because the 24-inch and the 0.7 m are good at different things. */
 const GROUPS = [
-  { name: 'Dome telescopes', kind: 'dome', coupling: 'match' },
+  { name: 'Dome telescopes', kind: 'dome', coupling: 'diverse' },
   { name: 'Portable telescopes', kind: 'portable', coupling: 'diverse' },
 ];
 
@@ -35,8 +37,8 @@ const COUPLING_LABELS = {
 };
 
 const COUPLING_OPTIONS = {
-  match: 'Matched — same category at once',
   diverse: 'Varied — different categories at once',
+  match: 'Matched — same category at once',
   none: 'Independent',
 };
 
@@ -252,7 +254,7 @@ function renderGroups() {
     name.textContent = g.name;
 
     const select = document.createElement('select');
-    for (const key of ['match', 'diverse', 'none']) {
+    for (const key of ['diverse', 'match', 'none']) {
       const opt = document.createElement('option');
       opt.value = key;
       opt.textContent = COUPLING_OPTIONS[key];

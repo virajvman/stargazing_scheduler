@@ -847,15 +847,25 @@ def main_scheduler(date, start_time, end_time, num_cluster=0, num_nebula=0, num_
 # The three telescopes-at-once rules all need telescopes scheduled *together* on
 # one shared clock, which is what schedule_group does:
 #
-#   coupling="match"   the telescopes in the group show the SAME category in each
-#                      interval. For the two domes, where a visitor only gets to
-#                      one of them: whichever dome you walk into, you see a
-#                      cluster, then a nebula, then a galaxy, rather than a
-#                      cluster here and another cluster there an hour later.
-#
 #   coupling="diverse" the telescopes show DIFFERENT categories in each interval.
 #                      For the portable line, which visitors walk end to end in
 #                      one go, so five minutes gets them five kinds of object.
+#                      Also the better setting for the two domes -- see below.
+#
+#   coupling="match"   the telescopes in the group show the SAME category in each
+#                      interval, synchronising them onto one varied sequence.
+#
+#                      This only helps when the telescopes can actually show the
+#                      same things. Ours cannot: the 24-inch is an eyepiece and
+#                      the 0.7 m takes long exposures, so their lists barely
+#                      overlap (the 24-inch owns no galaxies at all). Matching
+#                      then confines both domes to the thin shared repertoire,
+#                      which measurably backfires -- over a year of test nights a
+#                      visitor who saw one dome and later the other hit the same
+#                      category 26% of the time under "match" but only 17% under
+#                      "diverse", while the 0.7 m's galaxy time fell from 49% to
+#                      12% and each dome lost a target per night. Kept because it
+#                      is the right choice for two similar telescopes.
 #
 #   coupling="none"    telescopes are scheduled independently (old behaviour).
 
@@ -877,10 +887,14 @@ COUPLING_WEIGHT = 150.0
 #stays below COUPLING_WEIGHT and never talks a dome out of matching its partner.
 GROUP_REPEAT_PENALTY = {"diverse": 150.0, "none": 150.0, "match": 40.0}
 
-#One telescope showing the same category it just showed. Mild, but it is what
-#makes a single telescope's own night walk through cluster, nebula, galaxy rather
-#than sitting on one kind of object -- the variety a visitor to one dome sees.
-SEQUENCE_VARIETY_PENALTY = 35.0
+#One telescope showing the same category it just showed. This is what makes a
+#single telescope's own night walk through cluster, nebula, galaxy rather than
+#sitting on one kind of object, and for the domes it is the *main* thing
+#delivering variety to a visitor (see the note on "match" below). Swept over a
+#year of dates: 75 maxes out each telescope's own spread; past ~150 it starts
+#hurting, because forcing a change of category pushes telescopes onto whatever
+#is left, which collides with the other dome more often, not less.
+SEQUENCE_VARIETY_PENALTY = 75.0
 
 #Leaving a telescope with nothing this interval. Dwarfs every other term, so a
 #combination that keeps everyone busy always wins; it only bites when there are

@@ -22,33 +22,57 @@ Their mounts track poorly overhead, so they are capped at 80°
 overhead is still scheduled earlier or later in the night, on its way up or down.
 Other telescopes are uncapped and will happily take a target at 84°.
 
-### 2. The domes show the same category at the same time
-
-Nobody realistically gets to both domes in one visit, so both are pushed onto the
-same category in each interval. Whichever dome you walk into, you work through a
-cluster, then a nebula, then a galaxy — instead of seeing a cluster in one dome
-and, an hour later, another cluster in the other.
-
-### 3. The portables show different categories at the same time
+### 2. The portables show different categories at the same time
 
 Visitors walk the whole portable line in one go, so the portables are pushed onto
 *different* categories at any given moment. Five telescopes, five kinds of
 object, a few minutes.
 
+### 3. The domes also show different categories — because they specialise
+
+The 24-inch is an eyepiece; the 0.7 m takes long exposures. They are good at
+different things, and the target lists reflect that: the 24-inch has 8 clusters,
+2 bright nebulae and 2 planets, and **no galaxies**, because a faint galaxy
+through an eyepiece is a smudge.
+
+The obvious rule here looks like the opposite one — put both domes on the same
+category, so that whichever dome a visitor reaches, they work through a cluster,
+then a nebula, then a galaxy. That was the first implementation, and measuring it
+over a year of nights showed it backfires. Matching confines both domes to the
+narrow overlap between their lists, so:
+
+| dome setting | visitor sees one dome, then the other later, and it is the same category | 0.7 m slots spent on galaxies | targets per dome |
+| --- | --- | --- | --- |
+| matched | 26% | 12% | 2.8 |
+| **varied (default)** | **17%** | **49%** | **3.8** |
+
+Matching is *worse* at the very thing it was meant to achieve, because a
+two-category shared repertoire repeats itself, and it costs the 0.7 m most of the
+galaxy time only it can deliver. Keeping the domes apart lets each play to its
+strength and still leaves a dome visitor seeing variety.
+
+Variety for someone who stays at one dome comes from `SEQUENCE_VARIETY_PENALTY`
+instead, which stops a telescope showing the same category twice in a row.
+
+`match` is still available per group in the UI — it is the right choice for two
+*similar* telescopes, which these two are not.
+
 ### These are preferences, not constraints
 
-Rules 2 and 3 are score terms (`COUPLING_WEIGHT`, worth 150 against object scores
-that run 30–190), so when the lists or the sky will not cooperate they lose and
-you still get a schedule. The page reports how many intervals each rule actually
-held, and why it fell short when it did.
+The category rules are score terms (`COUPLING_WEIGHT`, worth 150 against object
+scores that run 30–190), so when the lists or the sky will not cooperate they lose
+and you still get a schedule. The page reports how many intervals each rule
+actually held, and why it fell short when it did.
 
 Only these are hard: the altitude band, one object per telescope per night, and
 no two telescopes in a group on the same object simultaneously. Even the first
 relaxes as a last resort — if a telescope has nothing new in reach it will repeat
 an earlier target rather than fail, and says so.
 
-A fourth, milder term (`SEQUENCE_VARIETY_PENALTY`) nudges each individual
-telescope to rotate categories over the night rather than sitting on one kind.
+A further term (`SEQUENCE_VARIETY_PENALTY`, 75) keeps each individual telescope
+rotating categories over the night rather than sitting on one kind. Swept over a
+year of dates, 75 maximises each telescope's own spread; past ~150 it starts
+hurting, since forcing a change pushes telescopes onto whatever is left.
 
 ### How many targets per telescope
 
@@ -59,7 +83,7 @@ binds first:
 | --- | --- |
 | time | window length ÷ the slowest telescope's `minutes_per_target` |
 | targets | a telescope can only reach so many objects tonight |
-| matching | for a matched group, more targets than the lists can agree on would only repeat categories |
+| matching | only for a group set to `match`: more targets than the lists can agree on would just repeat categories |
 
 Override it per group under **Options** if a night feels rushed or draggy, and
 adjust `minutes_per_target` in `target_lists.py` if the default pacing is wrong.
@@ -81,14 +105,6 @@ Coordinates are cached because the browser cannot query SIMBAD (`astroquery` is
 not available under Pyodide, and SIMBAD does not serve cross-origin requests).
 Deep-sky coordinates never change, so this costs nothing. Planets and the Moon
 are computed live from astropy's built-in ephemeris.
-
-### Dome matching is limited by the 24-inch's list
-
-Worth knowing if the domes often fail to match: the 24-inch list is 8 clusters, 2
-nebulae, 2 planets and **no galaxies**, so galaxies can never be matched however
-many the 0.7 m has. Measured over a year of test nights, adding 3 galaxies and 2
-nebulae to the 24-inch list moved dome matching from 64% to 88% — far more than
-any weight tuning does.
 
 ## Using it from Python
 
@@ -114,6 +130,16 @@ for group in out["groups"]:
 per-category counts, as [`make_schedule.ipynb`](make_schedule.ipynb) uses it. It
 now takes a `max_altitude` argument and runs on the same core, so single-telescope
 output is unchanged.
+
+## Changing the weights
+
+Every number above was chosen by measuring, not taste — `COUPLING_WEIGHT`,
+`SEQUENCE_VARIETY_PENALTY`, `GROUP_REPEAT_PENALTY` and the per-telescope
+`minutes_per_target`. If you change a target list or the roster, the old optima
+may not hold; sweep a candidate over a year of dates and look at what actually
+matters to a visitor (redundancy, whether each telescope uses its specialty)
+rather than at rule compliance, which is easy to maximise and easy to
+misinterpret.
 
 ## Tests
 
