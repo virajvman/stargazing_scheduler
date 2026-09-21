@@ -110,3 +110,171 @@ common_name: dict[str, str] = {
     "HIP26549": "Sigma-Orionis",
     "HIP36850": "Castor"
 }
+
+#the 8-inch and the 10-inch Dob get pointed at the same things, so they share one
+#list. Give the 8-inch its own dict here if the two ever diverge.
+objects_8inch: dict[str, str | list[str]] = dict(objects_10Dob, telescope_type="8inch")
+
+
+#### TELESCOPE REGISTRY
+
+"""The telescopes we can put on the lawn, and how visitors move between them.
+
+A *model* is a kind of telescope; an *instance* is one of them on a given night.
+Some nights there are two Dobs, some nights one, so the roster is built at
+schedule time from a {model: count} dict via build_roster().
+
+`kind` drives the default category coupling (see code.schedule_group):
+
+  "dome"     -> a visitor realistically only reaches ONE dome telescope per
+                session, so the domes should show the SAME category at the same
+                time. Whichever dome you walk into, you work through clusters,
+                then nebulae, then galaxies -- instead of seeing a cluster in one
+                dome and, an hour later, another cluster in the other.
+  "portable" -> visitors walk the whole portable line in one go, so the portables
+                should show DIFFERENT categories at the same time: maximum
+                variety in the few minutes someone spends at the tables.
+
+`max_altitude` caps how close to the zenith a telescope will be pointed. The
+eVscopes track poorly overhead, so they stop at 80 deg.
+
+`minutes_per_target` is how long one object realistically takes at that
+telescope, counting re-pointing and letting a queue of people look. It is only
+used to suggest how many targets to schedule (code.recommend_slots), so adjust it
+if a night feels rushed or draggy -- nothing else depends on it.
+"""
+
+ZENITH_LIMIT_EVSCOPE = 80.0
+
+TELESCOPE_MODELS: dict[str, dict] = {
+    "24inch": {
+        "display": '24-inch Dome',
+        "kind": "dome",
+        "minutes_per_target": 30,  # a queue of visitors filing past one eyepiece
+        "targets": objects_24inch,
+        "max_altitude": None,
+        "max_count": 1,
+        "default_count": 1,
+    },
+    "07m": {
+        "display": "0.7 m Dome",
+        "kind": "dome",
+        "minutes_per_target": 25,  # same, but quicker to re-point
+        "targets": objects_07m,
+        "max_altitude": None,
+        "max_count": 1,
+        "default_count": 1,
+    },
+    "evscope": {
+        "display": "eVscope",
+        "kind": "portable",
+        "minutes_per_target": 15,  # automated, and variety is the whole point here
+        "targets": objects_ev,
+        "max_altitude": ZENITH_LIMIT_EVSCOPE,
+        "max_count": 4,
+        "default_count": 2,
+    },
+    "5SE": {
+        "display": "Celestron 5SE",
+        "kind": "portable",
+        "minutes_per_target": 20,  # manual pointing, visual
+        "targets": objects_5SE,
+        "max_altitude": None,
+        "max_count": 2,
+        "default_count": 1,
+    },
+    "10Dob": {
+        "display": '10-inch Dobsonian',
+        "kind": "portable",
+        "minutes_per_target": 20,  # manual pointing, visual
+        "targets": objects_10Dob,
+        "max_altitude": None,
+        "max_count": 3,
+        "default_count": 1,
+    },
+    "8inch": {
+        "display": '8-inch',
+        "kind": "portable",
+        "minutes_per_target": 20,  # manual pointing, visual
+        "targets": objects_8inch,
+        "max_altitude": None,
+        "max_count": 2,
+        "default_count": 0,
+    },
+}
+
+#the object classes we schedule, and that get coupled between telescopes
+OBJECT_CLASSES: list[str] = ["cluster", "nebula", "galaxy", "planet", "point"]
+
+#human-readable class names, used in the web UI and the printed tables
+CLASS_DISPLAY: dict[str, str] = {
+    "cluster": "Star Clusters",
+    "nebula": "Nebulae",
+    "galaxy": "Galaxies",
+    "planet": "Planets & Moon",
+    "point": "Stars & Multiple Systems",
+}
+
+
+def instance_labels(model: str, count: int) -> list[str]:
+    """Output labels for `count` copies of `model`.
+
+    One of a kind keeps the bare model name ("5SE"); two or more get numbered
+    ("evscope_1", "evscope_2"), which is what the existing catalog_*.csv files
+    are already named.
+    """
+    if count <= 0:
+        return []
+    if count == 1:
+        return [model]
+    return [f"{model}_{i + 1}" for i in range(count)]
+
+
+def build_roster(counts: dict[str, int] | None = None) -> list[dict]:
+    """Expand a {model: how many tonight} dict into a list of telescope instances.
+
+    Each instance is what code.schedule_group consumes:
+        {"label", "display", "model", "kind", "targets", "max_altitude"}
+
+    Passing None uses each model's default_count, i.e. the usual observatory
+    setup: both domes, two eVscopes, a 5SE and one 10-inch Dob.
+    """
+    if counts is None:
+        counts = {m: spec["default_count"] for m, spec in TELESCOPE_MODELS.items()}
+
+    roster = []
+    for model, spec in TELESCOPE_MODELS.items():
+        n = int(counts.get(model, 0))
+        if n < 0:
+            raise ValueError(f"Cannot have {n} of the {model}")
+        if n > spec["max_count"]:
+            raise ValueError(
+                f"Only {spec['max_count']} of the {model} exist(s), got {n}"
+            )
+        labels = instance_labels(model, n)
+        for i, label in enumerate(labels):
+            roster.append({
+                "label": label,
+                "display": spec["display"] if n == 1 else f"{spec['display']} #{i + 1}",
+                "model": model,
+                "kind": spec["kind"],
+                "targets": spec["targets"],
+                "max_altitude": spec["max_altitude"],
+                "minutes_per_target": spec["minutes_per_target"],
+            })
+    return roster
+
+
+def default_groups(roster: list[dict] | None = None) -> list[dict]:
+    """Split a roster into the two coupled groups: domes matched, portables varied."""
+    if roster is None:
+        roster = build_roster()
+
+    groups = []
+    dome = [t["label"] for t in roster if t["kind"] == "dome"]
+    portable = [t["label"] for t in roster if t["kind"] == "portable"]
+    if dome:
+        groups.append({"name": "Dome telescopes", "telescopes": dome, "coupling": "match"})
+    if portable:
+        groups.append({"name": "Portable telescopes", "telescopes": portable, "coupling": "diverse"})
+    return groups

@@ -1,3 +1,5 @@
+import itertools
+import os
 import numpy as np
 import pandas as pd
 import time
@@ -6,13 +8,19 @@ from datetime import timedelta
 from astropy.time import Time
 from astropy.coordinates import SkyCoord, EarthLocation, AltAz
 import astropy.units as u
-from astroquery.simbad import Simbad
 from astropy.coordinates import EarthLocation, AltAz, get_body
-import matplotlib.pyplot as plt
-import matplotlib.dates as mdates
-from target_lists import common_name, outreach_link,  cluster_type_mapping
+from target_lists import (common_name, outreach_link, cluster_type_mapping,
+                          OBJECT_CLASSES, TELESCOPE_MODELS, build_roster, default_groups)
 import pytz
 from datetime import datetime
+
+#astroquery is only needed to look up coordinates we have not cached yet. It is
+#not available under Pyodide, so the web front end pre-loads a coordinate catalog
+#(see register_coordinates) and never touches SIMBAD.
+try:
+    from astroquery.simbad import Simbad
+except ImportError:  # pragma: no cover - depends on the environment
+    Simbad = None
 
 pacific = pytz.timezone("US/Pacific")
 
@@ -22,6 +30,49 @@ palo_alto_location = EarthLocation(
     lon=-122.1430 * u.deg,
     height=90 * u.m # observatory height above sea level
 )
+
+#name -> SkyCoord for everything we have already looked up. Deep-sky coordinates
+#never change, so this doubles as the offline catalog used in the browser.
+_COORD_CACHE = {}
+
+
+def register_coordinates(coords_deg):
+    """
+    Pre-load object coordinates so no SIMBAD query is needed.
+
+    coords_deg : dict of name -> (ra_deg, dec_deg), or name -> {"ra": .., "dec": ..}
+
+    Used by the web front end, which ships a generated coordinate catalog
+    (scripts/build_catalog.py writes it). Also worth calling in a notebook to
+    avoid hammering SIMBAD on every re-run.
+    """
+    for name, value in coords_deg.items():
+        if isinstance(value, dict):
+            ra, dec = value["ra"], value["dec"]
+        else:
+            ra, dec = value
+        _COORD_CACHE[name] = SkyCoord(ra=float(ra) * u.deg, dec=float(dec) * u.deg,
+                                      frame="icrs")
+    return len(_COORD_CACHE)
+
+
+def altitude_in_band(altitudes, min_altitude, max_altitude=None):
+    """
+    Is the telescope allowed to point here?
+
+    An object is usable while its altitude sits inside
+    [min_altitude, max_altitude]. The upper limit is what keeps the eVscopes away
+    from the zenith, where their mounts track badly -- note this is a band, not a
+    rejection: a target that culminates overhead is still perfectly good earlier
+    or later in the night, on its way up or down.
+
+    Accepts a scalar or an array, and returns the same shape as a bool.
+    """
+    alts = np.asarray(altitudes, dtype=float)
+    ok = alts >= min_altitude
+    if max_altitude is not None:
+        ok = ok & (alts <= max_altitude)
+    return ok if ok.ndim else bool(ok)
 
 def _is_simbad_transient_error(exc):
     """
@@ -122,6 +173,25 @@ def resolve_objects(object_names, max_retries=3, retry_wait_s=2.0):
     if len(object_names) == 0:
         return coords
 
+    #fastest path: anything already in the coordinate catalog needs no query
+    unresolved = []
+    for name in object_names:
+        if name in _COORD_CACHE:
+            coords[name] = _COORD_CACHE[name]
+        else:
+            unresolved.append(name)
+
+    object_names = unresolved
+    if len(object_names) == 0:
+        return coords
+
+    if Simbad is None:
+        raise RuntimeError(
+            "astroquery is unavailable and these objects are not in the coordinate "
+            f"catalog: {sorted(object_names)}. Either install astroquery, or add them "
+            "with scripts/build_catalog.py and call register_coordinates()."
+        )
+
     #fast path: one batched call to SIMBAD instead of N
     for attempt in range(max_retries):
         try:
@@ -187,6 +257,9 @@ def resolve_objects(object_names, max_retries=3, retry_wait_s=2.0):
                 print(f"Error resolving {name}: {e}")
                 break
 
+    #remember whatever we learned, so a re-run costs nothing
+    _COORD_CACHE.update(coords)
+
     return coords
 
 def resolve_object_coords(object_dict):
@@ -203,18 +276,17 @@ def resolve_object_coords(object_dict):
     return coords_dict
 
 
-def build_time_grid_local(date, start_time, end_time, time_resolution_min=5):
+def build_time_grid_local(date, start_time, end_time, time_resolution_min=5, verbose=False):
     """
     Build an astropy Time array from local (Pacific) times.
     """
 
     start_dt = pacific.localize(datetime.strptime(f"{date} {start_time}", "%Y-%m-%d %H:%M"))
-    
-    print("START:", start_dt)
-    
     end_dt = pacific.localize(datetime.strptime(f"{date} {end_time}", "%Y-%m-%d %H:%M"))
-    
-    print("END:", end_dt)
+
+    if verbose:
+        print("START:", start_dt)
+        print("END:", end_dt)
     
     # Handle midnight crossing
     if end_dt <= start_dt:
@@ -264,6 +336,7 @@ def observable_targets(
     start_time,
     end_time,
     min_altitude=30.0,
+    max_altitude=None,
     time_resolution_min=30,
     verbose=False):
     """
@@ -277,15 +350,21 @@ def observable_targets(
     start_time : 'HH:MM' (local time)
     end_time : 'HH:MM' (local time)
     min_altitude : float (degrees)
+    max_altitude : float or None (degrees). Upper altitude limit, for mounts that
+        track badly near the zenith (the eVscopes). An object only counts as
+        observable while it sits inside [min_altitude, max_altitude], so a target
+        that culminates overhead is still usable on its way up or down.
     time_resolution_min : int
 
     Returns
     -------
-    pandas.DataFrame with observable targets
+    pandas.DataFrame with observable targets. "max_altitude_deg" is the highest
+    *usable* altitude, i.e. the peak of the altitude curve clipped to the band.
     """
 
     # Build time grid (local time assumed; Astropy handles conversion)
-    times = build_time_grid_local(date, start_time, end_time, time_resolution_min)
+    times = build_time_grid_local(date, start_time, end_time, time_resolution_min,
+                                  verbose=verbose)
 
     empty_df = pd.DataFrame(columns=[
             "name",
@@ -318,11 +397,14 @@ def observable_targets(
             coord = obj_coords[name]
             altitudes = altitude_curve(coord, times, palo_alto_location)
     
-        max_alt = np.max(altitudes)
-        
-        #if the object ever exceeds the min altitude of consideration, add it to list!
-        if max_alt >= min_altitude:
-            tmp.append((name, altitudes, max_alt))        
+        #only altitudes inside the telescope's usable band count
+        in_band = altitude_in_band(altitudes, min_altitude, max_altitude)
+
+        #if the object is ever usable in this window, add it to list!
+        if np.any(in_band):
+            #best altitude it actually reaches *while usable*
+            max_alt = np.max(np.asarray(altitudes)[in_band])
+            tmp.append((name, altitudes, max_alt, in_band))
         
     if len(tmp) == 0:
         return empty_df, times, []
@@ -332,15 +414,16 @@ def observable_targets(
         
         # Build DataFrame
         df = pd.DataFrame([{'name': t[0], 'max_altitude_deg': t[2],
-                            'time_above_30min': (np.sum(t[1] >= min_altitude) - 1) * time_resolution_min}
+                            'time_above_30min': max(np.sum(t[3]) - 1, 0) * time_resolution_min}
                         for t in tmp_sorted])
 
         # Extract all_alts in same order
         #all_alts is a list of time vs. altitude for the different objects under consideration
         all_alts = [t[1] for t in tmp_sorted]
 
-    print(f"all_alts shape = {np.shape(np.array(all_alts))}")
-    
+    if verbose:
+        print(f"all_alts shape = {np.shape(np.array(all_alts))}")
+
     return df, times, all_alts
 
 
@@ -378,7 +461,7 @@ def compute_object_score(object_alt, object_frac_notobs, alpha=100):
 
 
 
-def select_optimal_ordering(time_local_datetimes, intervals, midpoints, chosen_objects, chosen_types, chosen_alts, min_altitude=30):
+def select_optimal_ordering(time_local_datetimes, intervals, midpoints, chosen_objects, chosen_types, chosen_alts, min_altitude=30, max_altitude=None):
     '''
     In this function, we implement the optimal ordering scheme of the targets to observe
     
@@ -431,7 +514,8 @@ def select_optimal_ordering(time_local_datetimes, intervals, midpoints, chosen_o
             tot_time_left = time_np[-1] - time_np_i[0]
             
             dt = np.diff(time_np)[0]  # timestep as timedelta64
-            tot_time_obs_left = (np.sum(alts_i >= min_altitude) - 1) * dt
+            n_obs_left = np.sum(altitude_in_band(alts_i, min_altitude, max_altitude))
+            tot_time_obs_left = max(n_obs_left - 1, 0) * dt
             
             if tot_time_left < 0 or tot_time_obs_left < 0:
                 raise ValueError(f"tot_time is negative: {tot_time_obs_left}, {tot_time_left}")
@@ -447,7 +531,7 @@ def select_optimal_ordering(time_local_datetimes, intervals, midpoints, chosen_o
         final_remain_idx = []
         for idx, remain_idx in enumerate(remaining_indices):
             
-            if alts_at_mid[idx] > min_altitude:
+            if altitude_in_band(alts_at_mid[idx], min_altitude, max_altitude):
     
                 score_i = compute_object_score(alts_at_mid[idx], frac_notobs_objs[idx])
         
@@ -461,7 +545,7 @@ def select_optimal_ordering(time_local_datetimes, intervals, midpoints, chosen_o
 
         #what is the elevation at which this object is being observed
         alts_at_mid =  np.array(alts_at_mid)
-        obs_elevation = alts_at_mid[alts_at_mid > min_altitude][best_local_idx]
+        obs_elevation = alts_at_mid[altitude_in_band(alts_at_mid, min_altitude, max_altitude)][best_local_idx]
         #is this object rising?
 
         if chosen_alts[chosen_idx][idx_time+1] > chosen_alts[chosen_idx][idx_time]:
@@ -489,8 +573,7 @@ def select_optimal_ordering(time_local_datetimes, intervals, midpoints, chosen_o
         
     #Convert to DataFrame
     df_schedule = pd.DataFrame(schedule)
-    print(df_schedule)
-    
+
     return df_schedule
 
 
@@ -586,9 +669,16 @@ def _append_alternates(new_dict, df_alternates, date_splits, columns):
             new_dict[ci].append(row[ci])
 
 
-def format_table(df, date, telescope_type=None, split_table=1, df_alternates=None):
+def build_catalog_frames(df, date, split_table=1, df_alternates=None):
     '''
-    In this function, we format the table so we can save it as a csv file
+    Turn a schedule into the printable catalog table(s).
+
+    Returns a list of DataFrames: one normally, or two when split_table=2 (the
+    schedule dealt out alternately, so two telescopes of the same kind get
+    different sheets). Each gets the same "Alternate Targets" block appended.
+
+    format_table() writes these to output/; the web front end serves them as
+    CSV downloads instead.
     '''
 
     date_splits = date.split("-")
@@ -600,6 +690,9 @@ def format_table(df, date, telescope_type=None, split_table=1, df_alternates=Non
 
     #build rows for the main schedule
     for i, name_i in enumerate(df["object"].tolist()):
+        if name_i is None:
+            #a slot nothing could fill; nothing to print for it
+            continue
         interval_str = dt_to_timestr(df["start"][i]) + "-" + dt_to_timestr(df["end"][i])
         row = _build_row_dict(
             name_i,
@@ -615,12 +708,12 @@ def format_table(df, date, telescope_type=None, split_table=1, df_alternates=Non
     #track how many rows belong to the main schedule (used for split_table=2)
     n_main = len(new_dict["Name"])
 
-    #convert the dict to a dataframe and save as a csv
+    #convert the dict to a dataframe(s)
     if split_table == 1:
         _append_alternates(new_dict, df_alternates, date_splits, columns)
-        df_out = pd.DataFrame(new_dict)
-        df_out.to_csv(f"output/catalog_{telescope_type}.csv", index=False)
-    elif split_table == 2:
+        return [pd.DataFrame(new_dict)]
+
+    if split_table == 2:
         #split only the main rows in an alternating way; both halves get the same alternates block
         df_main = pd.DataFrame({ci: new_dict[ci][:n_main] for ci in columns})
 
@@ -635,22 +728,46 @@ def format_table(df, date, telescope_type=None, split_table=1, df_alternates=Non
             df_1 = pd.concat([df_1, df_alt_block], ignore_index=True)
             df_2 = pd.concat([df_2, df_alt_block], ignore_index=True)
 
-        df_1.to_csv(f"output/catalog_{telescope_type}_1.csv", index=False)
-        df_2.to_csv(f"output/catalog_{telescope_type}_2.csv", index=False)
-    else:
-        print("Why so much splitting hehe :)")
+        return [df_1, df_2]
 
-    return
+    raise ValueError(f"split_table must be 1 or 2, got {split_table}")
+
+
+def format_table(df, date, telescope_type=None, split_table=1, df_alternates=None,
+                 output_dir="output"):
+    '''
+    In this function, we format the table so we can save it as a csv file
+    '''
+
+    frames = build_catalog_frames(df, date, split_table=split_table,
+                                  df_alternates=df_alternates)
+
+    if len(frames) == 1:
+        paths = [f"{output_dir}/catalog_{telescope_type}.csv"]
+    else:
+        paths = [f"{output_dir}/catalog_{telescope_type}_{i + 1}.csv"
+                 for i in range(len(frames))]
+
+    os.makedirs(output_dir, exist_ok=True)
+    for frame, path in zip(frames, paths):
+        frame.to_csv(path, index=False)
+
+    return paths
 
  
 def main_scheduler(date, start_time, end_time, num_cluster=0, num_nebula=0, num_galaxy=0, num_planet=0, num_point=0,
-                    telescope_objs_dict=None,min_altitude=30, split_table=1):
+                    telescope_objs_dict=None, min_altitude=30, max_altitude=None,
+                    split_table=1, verbose=True):
     '''
     Main function used to schedule targets for a given telescope and time information
 
+    One telescope at a time. To couple the categories that several telescopes show
+    at once -- the domes matching each other, the portables differing -- use
+    schedule_group() or schedule_night() instead.
+
     Example:
     #date format is YYYY-MM-DD
-    date = "2026-01-13" 
+    date = "2026-01-13"
 
     #local start time
     start_time = "18:30"
@@ -666,179 +783,804 @@ def main_scheduler(date, start_time, end_time, num_cluster=0, num_nebula=0, num_
     #time resolution for evaluating altitude
     time_resolution_min = 5
 
-    # obj_coords = resolve_object_coords(telescope_objs_dict)
+    quotas = {"cluster": num_cluster, "nebula": num_nebula, "galaxy": num_galaxy,
+              "planet": num_planet, "point": num_point}
+    tot_objects = sum(quotas.values())
+    if tot_objects == 0:
+        raise ValueError("Ask for at least one object")
 
-    tot_objects = num_cluster + num_nebula + num_planet + num_galaxy + num_point
-    #the total number of objects will determine how many minutes per object
+    label = telescope_objs_dict["telescope_type"]
+    telescope = {
+        "label": label,
+        "display": label,
+        "targets": telescope_objs_dict,
+        "max_altitude": max_altitude,
+        "quotas": quotas,
+    }
 
-    # total observing window in minutes
-    start_dt = pd.to_datetime(f"{date} {start_time}")
-    end_dt   = pd.to_datetime(f"{date} {end_time}")
-    total_minutes = int((end_dt - start_dt).total_seconds() / 60)
+    results = schedule_group(
+        date, start_time, end_time, [telescope], tot_objects,
+        coupling="none", min_altitude=min_altitude,
+        time_resolution_min=time_resolution_min, verbose=verbose)[label]
 
-    # divide time equally among all targets
-    minutes_per_target = total_minutes // tot_objects
+    df_schedule = results["schedule"]
+    df_alternates = results["alternates"]
 
-    print(f"Approx {minutes_per_target} mins per target!")
+    #write the csv(s), honouring split_table
+    format_table(df_schedule, date, label, split_table=split_table,
+                 df_alternates=df_alternates)
 
-    ##get the object observabilities
-    ##loop through each object type
+    if verbose:
+        print(df_schedule)
+        if len(df_alternates) > 0:
+            print(f"Alternates: {df_alternates['object'].tolist()}")
 
-    print("=="*5)
+    ##return stuff
 
-    object_classes = ["cluster", "nebula", "galaxy", "planet", "point"]
-    object_types = ["not_planet","not_planet","not_planet","planet", "not_planet"]
-    object_nums = [num_cluster, num_nebula, num_galaxy, num_planet, num_point]
+    times = build_time_grid_local(date, start_time, end_time, time_resolution_min)
+    time_local_datetimes = np.array(
+        [t.replace(tzinfo=None) for t in times.to_datetime(timezone=pacific)])
 
-    all_dfs = {}
-    all_alts = {}
+    scheduled = df_schedule["object"].tolist()
+    types = df_schedule["type"].tolist()
 
-    for idx,class_i in enumerate(object_classes):
+    return_dict = {"time_local_datetimes": time_local_datetimes,
+                    "df_schedule": df_schedule,
+                    "df_alternates": df_alternates}
 
-        if len(telescope_objs_dict[class_i]) == 0:
-            #if there are no objects of this class in target list
+    for class_i in OBJECT_CLASSES:
+        return_dict["best_" + class_i] = [o for o, ty in zip(scheduled, types)
+                                          if ty == class_i]
+        return_dict["df_" + class_i] = results["observable"][class_i]
+        return_dict["alts_" + class_i] = [c["alts"] for c in results["candidates"]
+                                          if c["cls"] == class_i]
 
-            print(f"There are no objects for class {class_i} for this telescope")
+    if verbose:
+        for class_i in OBJECT_CLASSES:
+            if quotas[class_i] > 0:
+                print(f"Best {class_i}: {return_dict['best_' + class_i]}")
 
-            times = build_time_grid_local(date, start_time, end_time, time_resolution_min)
+    return return_dict
 
-            df_class_i = pd.DataFrame(columns=[
-                "name",
-                "max_altitude_deg",
-                "time_above_30min"
-            ])
+#### GROUP SCHEDULING
+#
+# The three telescopes-at-once rules all need telescopes scheduled *together* on
+# one shared clock, which is what schedule_group does:
+#
+#   coupling="match"   the telescopes in the group show the SAME category in each
+#                      interval. For the two domes, where a visitor only gets to
+#                      one of them: whichever dome you walk into, you see a
+#                      cluster, then a nebula, then a galaxy, rather than a
+#                      cluster here and another cluster there an hour later.
+#
+#   coupling="diverse" the telescopes show DIFFERENT categories in each interval.
+#                      For the portable line, which visitors walk end to end in
+#                      one go, so five minutes gets them five kinds of object.
+#
+#   coupling="none"    telescopes are scheduled independently (old behaviour).
 
-            alts_class_i = []
 
-        else:
-            df_class_i, times, alts_class_i  = observable_targets(
-                object_names=telescope_objs_dict[class_i],
-                object_type=object_types[idx],
-                date=date,
-                start_time=start_time,
-                end_time=end_time,
-                min_altitude=min_altitude,
-                time_resolution_min=time_resolution_min,
-            )
+#How strongly the category rule pulls against simply pointing at whatever is
+#highest in the sky. Object scores run ~30-190 (altitude plus an urgency bonus).
+#Swept over a year of dates, raising this to ~150 takes the category rules from
+#holding ~65% of intervals to ~90% while *raising* the mean altitude observed
+#slightly, so there is no real trade-off here -- anything lower just gives up
+#compliance for nothing. Past ~150 the remaining misses are genuine: a telescope
+#that owns no galaxies cannot match a galaxy, however much we pay it.
+COUPLING_WEIGHT = 150.0
 
-        all_dfs[class_i] = df_class_i
-        all_alts[class_i] = alts_class_i
+#Showing the same object twice in a group. Two telescopes are never pointed at
+#the same object *simultaneously*, but reusing one later in the night depends on
+#who is watching: on the portable line, where visitors walk past every telescope,
+#a repeat wastes a slot and is worth avoiding strongly. Between the two domes,
+#where nobody reaches both, a repeat costs a visitor nothing -- so the penalty
+#stays below COUPLING_WEIGHT and never talks a dome out of matching its partner.
+GROUP_REPEAT_PENALTY = {"diverse": 150.0, "none": 150.0, "match": 40.0}
 
-        print(f"Total {len(df_class_i)} objects observable in class:{class_i} = {df_class_i['name'].tolist()}")
+#One telescope showing the same category it just showed. Mild, but it is what
+#makes a single telescope's own night walk through cluster, nebula, galaxy rather
+#than sitting on one kind of object -- the variety a visitor to one dome sees.
+SEQUENCE_VARIETY_PENALTY = 35.0
 
-        if len(df_class_i) < object_nums[idx]:
-            raise ValueError(f"You are requesting more objects ({object_nums[idx]}) in {class_i} class than are observable ({len(df_class_i)})!")
+#Leaving a telescope with nothing this interval. Dwarfs every other term, so a
+#combination that keeps everyone busy always wins; it only bites when there are
+#genuinely fewer distinct objects in reach than telescopes pointing at them.
+UNFILLED_PENALTY = 1000.0
 
-        print("--"*2)
 
-    print("=="*5)
-    #these the objects that have the highest elevation in the night
-    best_cluster, best_cluster_alts = pick_best_objs(all_dfs["cluster"], all_alts["cluster"], num_cluster)
-    best_nebula, best_nebula_alts = pick_best_objs(all_dfs["nebula"], all_alts["nebula"], num_nebula)
-    best_galaxy, best_galaxy_alts = pick_best_objs(all_dfs["galaxy"], all_alts["galaxy"], num_galaxy)
-    best_planet, best_planet_alts = pick_best_objs(all_dfs["planet"], all_alts["planet"], num_planet)
-    best_point, best_point_alts = pick_best_objs(all_dfs["point"], all_alts["point"], num_point)
+def _telescope_candidates(telescope, date, start_time, end_time, min_altitude,
+                          time_resolution_min, verbose=False):
+    '''
+    Work out everything one telescope could look at tonight.
 
-    if num_cluster > 0:
-        print(f"Best clusters: {best_cluster}")
-    if num_nebula > 0:
-        print(f"Best nebula: {best_nebula}")
-    if num_galaxy > 0:
-        print(f"Best galaxy: {best_galaxy}")
-    if num_planet > 0:
-        print(f"Best planet: {best_planet}")
-    if num_point > 0:
-        print(f"Best point: {best_point}")
-    print("=="*5)
+    Returns (candidates, times, df_by_class) where candidates is a list of
+        {"name", "cls", "alts", "peak"}
+    for every target that spends some time inside this telescope's altitude band.
+    '''
+    max_altitude = telescope.get("max_altitude")
+    targets = telescope["targets"]
 
-    #list of object names
-    chosen_objects = best_planet + best_cluster + best_nebula + best_galaxy + best_point
-    #list of altitude trajectories
-    chosen_alts = best_planet_alts + best_cluster_alts + best_nebula_alts + best_galaxy_alts + best_point_alts
-    #list of chosen object types
-    chosen_types =  ["planet"]*len(best_planet) + ["cluster"]*len(best_cluster) + ["nebula"]*len(best_nebula) + ["galaxy"]*len(best_galaxy) + ["point"]*len(best_point)
+    candidates = []
+    df_by_class = {}
+    times = None
 
-    ##Build alternates: top 3 unchosen observable objects ranked by max altitude across all classes
-    alternates_pool = []
-    for class_i in object_classes:
-        df_class_i = all_dfs[class_i]
-        alts_class_i = all_alts[class_i]
-        names_class_i = df_class_i["name"].tolist()
-        max_alts_class_i = df_class_i["max_altitude_deg"].tolist()
-        for j, name_j in enumerate(names_class_i):
-            if name_j in chosen_objects:
+    for cls in OBJECT_CLASSES:
+        names = targets.get(cls, [])
+        object_type = "planet" if cls == "planet" else "not_planet"
+
+        if len(names) == 0:
+            df_by_class[cls] = pd.DataFrame(
+                columns=["name", "max_altitude_deg", "time_above_30min"])
+            if times is None:
+                times = build_time_grid_local(date, start_time, end_time,
+                                              time_resolution_min, verbose=verbose)
+            continue
+
+        df_cls, times, alts_cls = observable_targets(
+            object_names=names,
+            object_type=object_type,
+            date=date,
+            start_time=start_time,
+            end_time=end_time,
+            min_altitude=min_altitude,
+            max_altitude=max_altitude,
+            time_resolution_min=time_resolution_min,
+            verbose=verbose,
+        )
+        df_by_class[cls] = df_cls
+
+        for i, name in enumerate(df_cls["name"].tolist()):
+            candidates.append({
+                "name": name,
+                "cls": cls,
+                "alts": np.asarray(alts_cls[i], dtype=float),
+                "peak": float(df_cls["max_altitude_deg"].iloc[i]),
+            })
+
+    return candidates, times, df_by_class
+
+
+def _candidate_score(candidate, idx_time, time_np, min_altitude, max_altitude):
+    '''
+    Urgency score for one candidate at one instant: high in the sky is good, and
+    running out of night is better still (compute_object_score does the mixing).
+    '''
+    alts_future = candidate["alts"][idx_time:]
+
+    total_left = time_np[-1] - time_np[idx_time]
+    if total_left <= np.timedelta64(0, 's'):
+        #last interval: nothing is more urgent than anything else
+        frac_notobs = 0.0
+    else:
+        dt = np.diff(time_np)[0]
+        n_usable = np.sum(altitude_in_band(alts_future, min_altitude, max_altitude))
+        obs_left = max(n_usable - 1, 0) * dt
+        frac_notobs = float(1 - (obs_left / total_left))
+        frac_notobs = min(max(frac_notobs, 0.0), 1.0)
+
+    return compute_object_score(float(candidate["alts"][idx_time]), frac_notobs)
+
+
+def _coupling_bonus(classes, coupling, last_classes=None):
+    '''
+    Reward for a set of per-telescope category choices in one interval.
+
+    "match" pays for every telescope beyond the first that agrees with the others;
+    "diverse" pays for every distinct category on show. Either way a telescope is
+    docked a little for repeating the category it showed last interval.
+    '''
+    if coupling == "match":
+        bonus = COUPLING_WEIGHT * (len(classes) - len(set(classes)))
+    elif coupling == "diverse":
+        bonus = COUPLING_WEIGHT * len(set(classes))
+    else:
+        bonus = 0.0
+
+    if last_classes is not None:
+        for cls, last in zip(classes, last_classes):
+            if last is not None and cls == last:
+                bonus -= SEQUENCE_VARIETY_PENALTY
+
+    return bonus
+
+
+def _assign_profile(profile, ranked, already_shown, repeat_penalty):
+    '''
+    Try to hand out one object per telescope, following `profile` (the category
+    each telescope is meant to show this interval).
+
+    profile : tuple of class names, one per telescope
+    ranked  : ranked[t][cls] = list of (score, name) best first
+    already_shown : object names another telescope in the group used earlier
+    repeat_penalty : cost of reusing one of those (see GROUP_REPEAT_PENALTY)
+
+    Two telescopes are never pointed at the same object in the same interval, so
+    when they share a category they take the first and second best object in it.
+    If there are fewer distinct objects in reach than telescopes wanting them,
+    the leftovers get None rather than a duplicate, at UNFILLED_PENALTY each --
+    which is what makes the search prefer categories that keep everyone busy.
+
+    Returns (total_score, picks), where picks may contain None.
+    '''
+    claimed = set()
+    picks = [None] * len(profile)
+    total = 0.0
+
+    #telescopes with the strongest claim choose first, so the best object in a
+    #shared category goes to whoever gains most from it
+    order = sorted(
+        range(len(profile)),
+        key=lambda t: ranked[t][profile[t]][0][0] if ranked[t].get(profile[t]) else -np.inf,
+        reverse=True,
+    )
+
+    for t in order:
+        options = ranked[t].get(profile[t]) or []
+        best = None
+        for score, name in options:
+            if name in claimed:
                 continue
-            alternates_pool.append((name_j, class_i, max_alts_class_i[j], alts_class_i[j]))
+            if name in already_shown:
+                score = score - repeat_penalty
+            if best is None or score > best[0]:
+                best = (score, name)
+                #options are sorted, so the first unclaimed one is already the
+                #best unless a repeat penalty applies; keep looking in that case
+                if name not in already_shown:
+                    break
 
-    #sort by max altitude descending and keep top 3
-    alternates_pool.sort(key=lambda x: x[2], reverse=True)
-    alternates_pool = alternates_pool[:3]
+        if best is None:
+            #every object of this category is already on another telescope
+            total -= UNFILLED_PENALTY
+            continue
 
-    #build a small df with the same column shape that format_table expects (minus start/end)
-    alt_rows = []
-    for name_j, class_j, max_alt_j, alt_curve_j in alternates_pool:
-        path_j = "rising" if alt_curve_j[-1] > alt_curve_j[0] else "falling"
-        alt_rows.append({
-            'object': name_j,
-            'type': class_j,
-            'elev': int(round(max_alt_j)),
-            'path': path_j,
-        })
-    df_alternates = pd.DataFrame(alt_rows, columns=['object', 'type', 'elev', 'path'])
+        claimed.add(best[1])
+        picks[t] = best[1]
+        total += best[0]
 
-    if len(df_alternates) > 0:
-        print(f"Alternates: {df_alternates['object'].tolist()}")
-
-    ##NOW FIGURE OUT THE OPTIMAL ORDERING!
+    return total, picks
 
 
-    #Build intervals
+def select_group_ordering(times, intervals, midpoints, telescopes, candidates_by_tel,
+                          coupling="none", min_altitude=30.0, verbose=False):
+    '''
+    Fill every interval on every telescope in the group at once.
+
+    For each interval we score each telescope's still-unused, currently-pointable
+    targets, then pick the combination of categories that scores best once the
+    coupling bonus is added. Enumerating category combinations (at most 5 per
+    telescope) is cheap at these group sizes and, unlike choosing telescope by
+    telescope, it will not paint the group into a corner -- e.g. letting the 0.7 m
+    take a galaxy in a "match" interval when the 24-inch has no galaxies to match
+    it with.
+
+    Returns {label: DataFrame} with one row per interval.
+    '''
+    time_np = np.asarray(times).astype('datetime64[s]')
+
+    used = {t["label"]: set() for t in telescopes}       #per telescope, no repeats
+    shown_in_group = set()                                #across the group tonight
+    schedules = {t["label"]: [] for t in telescopes}
+    last_classes = [None] * len(telescopes)               #what each showed last interval
+    repeat_penalty = GROUP_REPEAT_PENALTY.get(coupling, 150.0)
+    notes = []                                            #anything the operator should know
+
+    #how many of each category each telescope has been asked for, if anything
+    quota_left = {}
+    for t in telescopes:
+        quotas = t.get("quotas")
+        quota_left[t["label"]] = dict(quotas) if quotas else None
+
+    for k, mp in enumerate(midpoints):
+        idx_time = int(np.argmin(np.abs(time_np - np.datetime64(mp))))
+
+        #what can each telescope point at right now, ranked within each category
+        def pointable(t, allow_used):
+            max_altitude = t.get("max_altitude")
+            quotas = quota_left[t["label"]]
+            by_class = {}
+            for cand in candidates_by_tel[t["label"]]:
+                if not allow_used and cand["name"] in used[t["label"]]:
+                    continue
+                #a telescope asked for e.g. exactly one cluster stops offering
+                #clusters once it has had one
+                if quotas is not None and quotas.get(cand["cls"], 0) <= 0:
+                    continue
+                if not altitude_in_band(cand["alts"][idx_time], min_altitude, max_altitude):
+                    continue
+                score = _candidate_score(cand, idx_time, time_np, min_altitude, max_altitude)
+                by_class.setdefault(cand["cls"], []).append((score, cand["name"]))
+            for cls in by_class:
+                by_class[cls].sort(reverse=True)
+            return by_class
+
+        #A telescope can genuinely run dry mid-window -- everything it owns has
+        #either been shown already or is out of its altitude band right now. That
+        #is no reason to throw away the whole event's schedule, so fall back to
+        #showing one of its earlier targets again, and only leave the slot empty
+        #if even that is impossible. Both cases are reported in `notes`.
+        ranked = []
+        reusing = []
+        for t in telescopes:
+            by_class = pointable(t, allow_used=False)
+            repeat = False
+            if len(by_class) == 0:
+                by_class = pointable(t, allow_used=True)
+                repeat = len(by_class) > 0
+                if repeat:
+                    notes.append(
+                        f"{t['label']} had nothing new above the horizon at "
+                        f"{dt_to_timestr(mp)}, so it shows an earlier target again."
+                    )
+                else:
+                    notes.append(
+                        f"{t['label']} has nothing it can point at around "
+                        f"{dt_to_timestr(mp)} -- that slot is left open."
+                    )
+            ranked.append(by_class)
+            reusing.append(repeat)
+
+        #telescopes with nothing at all sit this interval out
+        active = [i for i, r in enumerate(ranked) if len(r) > 0]
+        idle = [i for i, r in enumerate(ranked) if len(r) == 0]
+
+        #best combination of categories across the group. The number of
+        #combinations is (classes ** telescopes), so bound each one by its best
+        #possible score before doing the real assignment and skip the hopeless ones
+        best = (None, None, None)
+        sub_ranked = [ranked[i] for i in active]
+        sub_last = [last_classes[i] for i in active]
+        ceiling = [{cls: opts[0][0] for cls, opts in r.items()} for r in sub_ranked]
+
+        for profile in itertools.product(*[sorted(r.keys()) for r in sub_ranked]):
+            bonus = _coupling_bonus(profile, coupling, sub_last)
+            bound = sum(ceiling[t][cls] for t, cls in enumerate(profile)) + bonus
+            if best[0] is not None and bound <= best[0]:
+                continue
+
+            total, picks = _assign_profile(profile, sub_ranked, shown_in_group,
+                                           repeat_penalty)
+            total += bonus
+            if best[0] is None or total > best[0]:
+                best = (total, profile, picks)
+
+        interval_start, interval_end = intervals[k]
+        _, profile, picks = best
+
+        chosen = {}
+        for slot, i in enumerate(active):
+            if picks[slot] is None:
+                #fewer distinct objects in reach than telescopes; better an open
+                #slot the operator can fill than two telescopes on one object
+                notes.append(
+                    f"{telescopes[i]['label']} shares its only remaining options with "
+                    f"another telescope at {dt_to_timestr(mp)}, so that slot is left open."
+                )
+                last_classes[i] = None
+            else:
+                chosen[i] = (profile[slot], picks[slot])
+                last_classes[i] = profile[slot]
+
+        for i in idle:
+            last_classes[i] = None
+
+        for i, t in enumerate(telescopes):
+            if i in chosen:
+                cls, name = chosen[i]
+                cand = next(c for c in candidates_by_tel[t["label"]] if c["name"] == name)
+                alts = cand["alts"]
+
+                #is it on the way up or on the way down?
+                nxt = min(idx_time + 1, len(alts) - 1)
+                rising_flag = "rising" if alts[nxt] > alts[idx_time] else "falling"
+
+                schedules[t["label"]].append({
+                    'object': name,
+                    'type': cls,
+                    'start': interval_start,
+                    'end': interval_end,
+                    'elev': int(alts[idx_time]),
+                    'path': rising_flag,
+                    'repeat': name in used[t["label"]],
+                })
+
+                used[t["label"]].add(name)
+                shown_in_group.add(name)
+                if quota_left[t["label"]] is not None:
+                    quota_left[t["label"]][cls] -= 1
+            else:
+                #nothing pointable: keep the row so every telescope in the group
+                #stays on the same interval grid, but leave it blank
+                schedules[t["label"]].append({
+                    'object': None,
+                    'type': None,
+                    'start': interval_start,
+                    'end': interval_end,
+                    'elev': None,
+                    'path': None,
+                    'repeat': False,
+                })
+
+        if verbose:
+            summary = ", ".join(
+                f"{t['label']}={chosen[i][1]} ({chosen[i][0]})" if i in chosen
+                else f"{t['label']}=(open)"
+                for i, t in enumerate(telescopes))
+            print(f"  {dt_to_timestr(interval_start)}-{dt_to_timestr(interval_end)}: {summary}")
+
+    return {label: pd.DataFrame(rows) for label, rows in schedules.items()}, notes
+
+
+def build_intervals(date, start_time, end_time, num_slots):
+    '''
+    Chop the observing window into num_slots equal intervals, and give back their
+    midpoints too (which is where we evaluate altitudes).
+    '''
+    if num_slots < 1:
+        raise ValueError(f"Need at least one target per telescope, got {num_slots}")
+
+    start_dt = pd.to_datetime(f"{date} {start_time}")
+    end_dt = pd.to_datetime(f"{date} {end_time}")
+    if end_dt <= start_dt:
+        #window runs past midnight
+        end_dt += pd.Timedelta(days=1)
+
+    total_minutes = int((end_dt - start_dt).total_seconds() / 60)
+    minutes_per_target = total_minutes // num_slots
+    if minutes_per_target < 1:
+        raise ValueError(
+            f"{num_slots} targets in {total_minutes} minutes leaves under a minute each"
+        )
+
     intervals = []
     current_start = start_dt
-    for _ in range(tot_objects):
+    for _ in range(num_slots):
         current_end = current_start + pd.Timedelta(minutes=minutes_per_target)
         intervals.append((current_start, current_end))
         current_start = current_end
 
-    #Compute midpoints
-    midpoints = [start + (end - start)/2 for start, end in intervals]
-    time_local_datetimes = np.array([t.replace(tzinfo=None) for t in times.to_datetime(timezone=pacific)])
+    midpoints = [s + (e - s) / 2 for s, e in intervals]
 
-    if len(time_local_datetimes) != len(chosen_alts[0]):
-        raise ValueError("Time array and altitude array do not have same length!")
-
-    df_schedule = select_optimal_ordering(time_local_datetimes, 
-                        intervals,
-                        midpoints, 
-                        chosen_objects, 
-                        chosen_types,
-                        chosen_alts, 
-                        min_altitude=min_altitude)
-
-    ##format the table!
-
-    format_table(df_schedule, date, telescope_objs_dict["telescope_type"], split_table=split_table, df_alternates=df_alternates)
-
-    ##return stuff
-
-    return_dict = {"time_local_datetimes": time_local_datetimes,
-                    "best_cluster": best_cluster, "best_nebula": best_nebula, "best_planet": best_planet, "best_galaxy": best_galaxy, "best_point": best_point,
-                    "df_schedule": df_schedule,
-                    "df_alternates": df_alternates  }
-
-    for class_i in object_classes:
-        return_dict["df_" + class_i] = all_dfs[class_i]
-        return_dict["alts_" + class_i] = all_alts[class_i]
-
-    return return_dict
+    return intervals, midpoints, minutes_per_target
 
 
+def _build_alternates(candidates, chosen_names, num_alternates=3):
+    '''
+    The best few targets we did not schedule, as a fallback for the operator.
+    '''
+    pool = [c for c in candidates if c["name"] not in chosen_names]
+    pool.sort(key=lambda c: c["peak"], reverse=True)
+
+    rows = []
+    for cand in pool[:num_alternates]:
+        alts = cand["alts"]
+        rows.append({
+            'object': cand["name"],
+            'type': cand["cls"],
+            'elev': int(round(cand["peak"])),
+            'path': "rising" if alts[-1] > alts[0] else "falling",
+        })
+
+    return pd.DataFrame(rows, columns=['object', 'type', 'elev', 'path'])
 
 
+def matchable_capacity(telescopes, candidates_by_tel):
+    '''
+    How many intervals a "match" group can keep agreeing for.
+
+    Each matched interval spends one object of the agreed category at *every*
+    telescope, so a category is only good for as many intervals as its thinnest
+    list allows: with 4 clusters at one dome and 3 at the other, clusters carry 3
+    intervals. Summing that over the categories both can serve gives the ceiling.
+
+    This is why the 24-inch's list matters so much -- it owns no galaxies, so
+    galaxies contribute nothing to the domes' ceiling no matter how many the
+    0.7 m has.
+    '''
+    per_telescope = {}
+    for t in telescopes:
+        counts = {}
+        for cand in candidates_by_tel[t["label"]]:
+            counts[cand["cls"]] = counts.get(cand["cls"], 0) + 1
+        per_telescope[t["label"]] = counts
+
+    classes = set()
+    for counts in per_telescope.values():
+        classes.update(counts)
+
+    return sum(min(per_telescope[t["label"]].get(cls, 0) for t in telescopes)
+               for cls in classes)
 
 
+def recommend_slots(date, start_time, end_time, telescopes, min_altitude=30.0,
+                    time_resolution_min=5, candidates_by_tel=None, coupling="none"):
+    '''
+    Suggest how many targets each telescope in a group should work through.
+
+    Three things bound it. The clock: an interval has to be long enough for the
+    slowest telescope in the group to re-point and let a queue of people look
+    (minutes_per_target in target_lists.py). The sky: you cannot schedule six
+    objects at a telescope that can only reach four tonight. And, for a matched
+    group, the lists themselves -- asking the domes for more targets than they can
+    agree on just buys repeated categories, which is the opposite of the point, so
+    the count is trimmed to what they can actually match on.
+
+    Returns {"num_slots", "window_minutes", "pace", "pace_limit", "available",
+             "limited_by", "reason"} -- the numbers as well as the answer, so the
+    page can explain itself and the operator can overrule it.
+    '''
+    start_dt = pd.to_datetime(f"{date} {start_time}")
+    end_dt = pd.to_datetime(f"{date} {end_time}")
+    if end_dt <= start_dt:
+        end_dt += pd.Timedelta(days=1)
+    window = int((end_dt - start_dt).total_seconds() / 60)
+
+    #the group shares one interval grid, so the slowest telescope sets the pace
+    pace = max(t.get("minutes_per_target") or 20 for t in telescopes)
+    pace_limit = max(1, window // pace)
+
+    #how many objects each telescope can actually reach tonight
+    if candidates_by_tel is None:
+        candidates_by_tel = {}
+        for t in telescopes:
+            cands, _, _ = _telescope_candidates(
+                t, date, start_time, end_time, min_altitude, time_resolution_min)
+            candidates_by_tel[t["label"]] = cands
+
+    available = min(len(candidates_by_tel[t["label"]]) for t in telescopes)
+
+    #never trim a matched group below this: two targets is the least that still
+    #shows a visitor any variety at all
+    MIN_MATCHED_SLOTS = 2
+
+    match_limit = None
+    if coupling == "match" and len(telescopes) > 1:
+        match_limit = max(MIN_MATCHED_SLOTS,
+                          matchable_capacity(telescopes, candidates_by_tel))
+
+    limits = [pace_limit, available] + ([match_limit] if match_limit else [])
+    num_slots = max(1, min(limits))
+
+    if match_limit is not None and match_limit == num_slots < min(pace_limit, available):
+        limited_by = "matching"
+        reason = (f"the telescopes can only agree on {match_limit} categories-worth "
+                  f"of objects tonight; more targets than that would just repeat "
+                  f"categories")
+    elif available <= min(pace_limit, match_limit or pace_limit):
+        thin = min(telescopes, key=lambda t: len(candidates_by_tel[t["label"]]))
+        limited_by = "targets"
+        reason = (f"{thin['label']} can only reach {available} object(s) tonight, "
+                  f"so that caps the group")
+    else:
+        limited_by = "time"
+        reason = (f"{window} min at about {pace} min per object "
+                  f"(the slowest telescope in the group)")
+
+    return {
+        "num_slots": int(num_slots),
+        "window_minutes": window,
+        "pace": int(pace),
+        "pace_limit": int(pace_limit),
+        "available": int(available),
+        "match_limit": int(match_limit) if match_limit is not None else None,
+        "limited_by": limited_by,
+        "reason": reason,
+    }
 
 
+def schedule_group(date, start_time, end_time, telescopes, num_slots=None,
+                   coupling="none", min_altitude=30.0, time_resolution_min=5,
+                   num_alternates=3, write_csv=False, output_dir="output",
+                   verbose=True):
+    '''
+    Schedule a set of telescopes that share one observing window, coupling their
+    object categories.
+
+    Parameters
+    ----------
+    date : 'YYYY-MM-DD'
+    start_time, end_time : 'HH:MM' local (Pacific)
+    telescopes : list of instance dicts from target_lists.build_roster(), each
+        {"label", "targets", "max_altitude", ...} and optionally
+        "quotas" : {class: how many of that class this telescope should get}
+    num_slots : how many targets each telescope works through tonight. One shared
+        interval grid is what makes "same category at the same time" meaningful.
+        Pass None to let recommend_slots() work it out from the window length, the
+        telescopes' pace and what is actually up.
+    coupling : "match" (domes), "diverse" (portables) or "none"
+    min_altitude : floor in degrees, applied to every telescope
+    write_csv : also write output_dir/catalog_<label>.csv
+
+    Returns
+    -------
+    dict keyed by telescope label, each
+        {"display", "schedule", "catalog", "csv", "alternates", "observable"}
+    '''
+    if coupling not in ("match", "diverse", "none"):
+        raise ValueError(f"coupling must be 'match', 'diverse' or 'none', got {coupling!r}")
+    if len(telescopes) == 0:
+        return {}
+
+    #what each telescope could look at tonight
+    candidates_by_tel = {}
+    observable_by_tel = {}
+    times = None
+    for t in telescopes:
+        cands, times, df_by_class = _telescope_candidates(
+            t, date, start_time, end_time, min_altitude, time_resolution_min)
+        candidates_by_tel[t["label"]] = cands
+        observable_by_tel[t["label"]] = df_by_class
+
+        if verbose:
+            by_cls = {}
+            for c in cands:
+                by_cls.setdefault(c["cls"], []).append(c["name"])
+            print(f"  {t['label']}: " + ("; ".join(
+                f"{cls} x{len(v)}" for cls, v in by_cls.items()) or "nothing observable"))
+
+    recommendation = recommend_slots(
+        date, start_time, end_time, telescopes, min_altitude=min_altitude,
+        time_resolution_min=time_resolution_min, candidates_by_tel=candidates_by_tel,
+        coupling=coupling)
+
+    if num_slots is None:
+        num_slots = recommendation["num_slots"]
+        if verbose:
+            print(f"  suggested {num_slots} targets each: {recommendation['reason']}")
+
+    for t in telescopes:
+        if len(candidates_by_tel[t["label"]]) < num_slots:
+            raise ValueError(
+                f"{t['label']} can only reach {len(candidates_by_tel[t['label']])} "
+                f"target(s) in this window but needs {num_slots}. Widen the window, ask "
+                f"for fewer targets, or add objects to its list."
+            )
+
+    for t in telescopes:
+        quotas = t.get("quotas")
+        if quotas and sum(quotas.values()) != num_slots:
+            raise ValueError(
+                f"{t['label']}: per-category counts add up to {sum(quotas.values())} "
+                f"but the group has {num_slots} slots per telescope"
+            )
+
+    intervals, midpoints, minutes_per_target = build_intervals(
+        date, start_time, end_time, num_slots)
+
+    if verbose:
+        labels = ", ".join(t["label"] for t in telescopes)
+        print(f"== {labels} | coupling={coupling} | "
+              f"{num_slots} targets x ~{minutes_per_target} min ==")
+
+    time_local_datetimes = np.array(
+        [ti.replace(tzinfo=None) for ti in times.to_datetime(timezone=pacific)])
+
+    schedules, notes = select_group_ordering(
+        time_local_datetimes, intervals, midpoints, telescopes, candidates_by_tel,
+        coupling=coupling, min_altitude=min_altitude, verbose=verbose)
+
+    if verbose:
+        for note in notes:
+            print(f"  note: {note}")
+
+    results = {}
+    for t in telescopes:
+        label = t["label"]
+        df_schedule = schedules[label]
+        chosen = set(n for n in df_schedule["object"].tolist() if n is not None)
+
+        df_alternates = _build_alternates(
+            candidates_by_tel[label], chosen, num_alternates=num_alternates)
+
+        catalog = build_catalog_frames(df_schedule, date, split_table=1,
+                                       df_alternates=df_alternates)[0]
+
+        if write_csv:
+            os.makedirs(output_dir, exist_ok=True)
+            catalog.to_csv(f"{output_dir}/catalog_{label}.csv", index=False)
+
+        results[label] = {
+            "display": t.get("display", label),
+            #notes naming this telescope, plus the group-wide ones
+            "notes": [n for n in notes if n.startswith(label)],
+            "group_notes": list(notes),
+            "schedule": df_schedule,
+            "catalog": catalog,
+            "csv": catalog.to_csv(index=False),
+            "alternates": df_alternates,
+            "observable": observable_by_tel[label],
+            "candidates": candidates_by_tel[label],
+            "num_slots": num_slots,
+            "minutes_per_target": minutes_per_target,
+            "recommendation": recommendation,
+        }
+
+    return results
 
 
-        
+def schedule_night(date, start_time, end_time, groups=None, roster=None,
+                   num_slots=None, slots_by_group=None, quotas_by_telescope=None,
+                   min_altitude=30.0, time_resolution_min=5, num_alternates=3,
+                   write_csv=False, output_dir="output", verbose=True):
+    '''
+    Schedule a whole event: every group of telescopes, each with its own coupling.
+
+    This is the entry point the web front end calls.
+
+    Parameters
+    ----------
+    groups : list of {"name", "telescopes": [label, ...], "coupling"}.
+        Defaults to target_lists.default_groups(roster) -- domes matched,
+        portables diversified.
+    roster : list of telescope instances from target_lists.build_roster().
+    num_slots : targets per telescope, for any group not named in slots_by_group.
+        None (the default) asks recommend_slots() to work it out per group.
+    slots_by_group : {group name: targets per telescope}, for when the domes
+        should linger on fewer objects than the portable line. A None value for a
+        group means "recommend one for this group".
+    quotas_by_telescope : {label: {class: count}} to pin down categories.
+
+    Returns
+    -------
+    {"date", "start_time", "end_time", "groups": [...], "telescopes": {label: ...}}
+    '''
+    if roster is None:
+        roster = build_roster()
+    if groups is None:
+        groups = default_groups(roster)
+
+    by_label = {t["label"]: t for t in roster}
+    unknown = [lab for g in groups for lab in g["telescopes"] if lab not in by_label]
+    if unknown:
+        raise ValueError(f"Not in the roster: {', '.join(unknown)}")
+
+    all_results = {}
+    group_summaries = []
+
+    for group in groups:
+        labels = group["telescopes"]
+        if len(labels) == 0:
+            continue
+
+        slots = (slots_by_group or {}).get(group["name"], num_slots)
+
+        telescopes = []
+        for lab in labels:
+            t = dict(by_label[lab])
+            if quotas_by_telescope and lab in quotas_by_telescope:
+                t["quotas"] = quotas_by_telescope[lab]
+            telescopes.append(t)
+
+        #a group of one has nothing to couple with
+        coupling = group.get("coupling", "none")
+        if len(telescopes) == 1:
+            coupling = "none"
+
+        results = schedule_group(
+            date, start_time, end_time, telescopes, slots,
+            coupling=coupling, min_altitude=min_altitude,
+            time_resolution_min=time_resolution_min, num_alternates=num_alternates,
+            write_csv=write_csv, output_dir=output_dir, verbose=verbose)
+
+        all_results.update(results)
+        first_result = next(iter(results.values()))
+        group_notes = list(first_result["group_notes"])
+        first = first_result
+        group_summaries.append({
+            "name": group["name"],
+            "coupling": coupling,
+            "telescopes": labels,
+            "num_slots": first["num_slots"],
+            "minutes_per_target": first["minutes_per_target"],
+            "auto_slots": slots is None,
+            "recommendation": first["recommendation"],
+            "notes": group_notes,
+        })
+
+    return {
+        "date": date,
+        "start_time": start_time,
+        "end_time": end_time,
+        "groups": group_summaries,
+        "telescopes": all_results,
+    }

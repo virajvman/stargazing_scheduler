@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Stargazing Scheduler</title>
+<meta name="description" content="Build observing schedules for the Stanford student observatory telescopes.">
+<link rel="stylesheet" href="web/app.css">
+</head>
+<body>
+
+<main>
+
+  <h1>Stargazing Scheduler</h1>
+
+  <form id="config-form" autocomplete="off">
+
+    <div class="when">
+      <label>Date <input type="date" id="date" required></label>
+      <label>From <input type="time" id="start-time" value="21:00" required></label>
+      <label>To <input type="time" id="end-time" value="22:30" required></label>
+      <label>Min altitude <input type="number" id="min-altitude" value="30" min="5" max="85" step="5"></label>
+    </div>
+
+    <div id="telescope-list" class="scopes">
+      <p class="muted">Loading&hellip;</p>
+    </div>
+
+    <div class="go">
+      <button type="submit" id="generate" class="primary" disabled>Loading&hellip;</button>
+      <span id="status" class="muted" role="status" aria-live="polite"></span>
+      <button type="button" id="advanced-toggle" class="link">Options</button>
+    </div>
+
+    <div id="advanced" class="advanced" hidden>
+      <div id="group-list"></div>
+      <p class="muted small">
+        Telescopes in a group share one clock. <b>Matched</b> keeps them on the same kind of
+        object at once &mdash; for the domes, since nobody visits both. <b>Varied</b> keeps them
+        on different kinds &mdash; for the portables, which visitors walk end to end.
+      </p>
+    </div>
+
+  </form>
+
+  <p id="error-message" class="error" hidden></p>
+
+  <section id="results" hidden>
+    <div class="results-head">
+      <h2 id="results-title"></h2>
+      <div>
+        <button type="button" id="download-zip" class="primary">Download CSVs</button>
+        <button type="button" id="print-view" class="link">Print</button>
+      </div>
+    </div>
+    <div id="timelines"></div>
+    <div id="tables"></div>
+  </section>
+
+  <footer>
+    <span>Runs in your browser &mdash; the same <code>code.py</code> as the notebook, via Pyodide.</span>
+    <a href="https://github.com/virajvman/stargazing_scheduler">Source</a>
+    <span id="catalog-stamp" class="muted"></span>
+  </footer>
+
+</main>
+
+<script src="https://cdn.jsdelivr.net/pyodide/v0.28.3/full/pyodide.js"></script>
+<script src="web/app.js"></script>
+</body>
+</html>
