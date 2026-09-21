@@ -221,14 +221,24 @@ async function bootPython() {
 
   setStatus('Starting the scheduler…');
 
-  // cache-bust so an edited code.py is picked up rather than served stale
-  const stamp = `?v=${Date.now()}`;
+  // These are fetched with the browser's normal caching, deliberately: this file
+  // is itself loaded through a plain <script src> and so can be cached for as
+  // long as GitHub Pages says (10 minutes). Forcing the Python fresh while the
+  // loader stays cached is what produces a version mismatch -- a cached app.js
+  // that has never heard of a module the current bridge.py imports. Letting
+  // everything follow one cache policy keeps the set consistent.
+  const load = async (path) => {
+    const response = await fetch(path);
+    if (!response.ok) throw new Error(`${path} returned ${response.status}`);
+    return response.text();
+  };
+
   const [codePy, targetsPy, sheetPy, bridgePy, catalogText] = await Promise.all([
-    fetch('code.py' + stamp).then((r) => r.text()),
-    fetch('target_lists.py' + stamp).then((r) => r.text()),
-    fetch('spreadsheet.py' + stamp).then((r) => r.text()),
-    fetch('web/bridge.py' + stamp).then((r) => r.text()),
-    fetch('web/catalog.json' + stamp).then((r) => r.text()),
+    load('code.py'),
+    load('target_lists.py'),
+    load('spreadsheet.py'),
+    load('web/bridge.py'),
+    load('web/catalog.json'),
   ]);
 
   const fs = state.pyodide.FS;
@@ -856,8 +866,18 @@ async function main() {
   } catch (err) {
     setStatus('');
     el('generate').textContent = 'Unavailable';
-    showError('Could not start Python in this browser: ' +
-              String(err && err.message ? err.message : err));
+
+    const detail = String(err && err.message ? err.message : err);
+    //a module the loader never wrote means this page and its Python disagree,
+    //which a cached copy of one of them causes
+    const stale = /ModuleNotFoundError|No module named/.test(detail);
+    showError(
+      (stale
+        ? 'This page and its Python are out of step, which usually means the ' +
+          'browser is serving a cached copy of one of them. A hard refresh ' +
+          '(Cmd-Shift-R, or Ctrl-Shift-R) should fix it. '
+        : 'Could not start Python in this browser. ') + detail
+    );
     return;
   }
 

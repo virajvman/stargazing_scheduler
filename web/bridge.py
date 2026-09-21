@@ -10,7 +10,6 @@ import io
 import json
 import zipfile
 
-import spreadsheet
 import stargazing as sched
 from target_lists import (TELESCOPE_MODELS, OBJECT_CLASSES, CLASS_DISPLAY,
                           cluster_type_mapping, common_name, build_roster)
@@ -299,7 +298,20 @@ def workbook_bundle(result_json):
     """Every telescope down one sheet, as .xlsx, base64 for download.
 
     This is the sheet that gets shared: import it straight into Google Sheets.
+
+    spreadsheet is imported here rather than at module scope so that a browser
+    holding a stale cached app.js -- one that predates the module and so never
+    loaded it -- still gets a working page, and only this one button complains.
     """
+    try:
+        import spreadsheet
+    except ModuleNotFoundError:
+        raise RuntimeError(
+            "The spreadsheet writer did not load, which usually means the browser "
+            "is running a cached copy of an older page. Reload with a hard refresh "
+            "(Cmd-Shift-R, or Ctrl-Shift-R) and try again."
+        )
+
     data = json.loads(result_json)
 
     #keep the on-screen order: group by group, telescope by telescope
