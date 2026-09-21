@@ -10,6 +10,7 @@ import io
 import json
 import zipfile
 
+import spreadsheet
 import stargazing as sched
 from target_lists import (TELESCOPE_MODELS, OBJECT_CLASSES, CLASS_DISPLAY,
                           cluster_type_mapping, common_name, build_roster)
@@ -46,6 +47,10 @@ def _object_type(catalog_name, cls):
     return CLASS_DISPLAY.get(cls, cls)
 
 
+#formatted tables from the last run, so the workbook download needs no rerun
+_FRAMES = {}
+
+
 def run_schedule(config_json):
     """Schedule a night. Returns a JSON string; never raises."""
     try:
@@ -56,6 +61,15 @@ def run_schedule(config_json):
 
 
 def _run(cfg):
+    _FRAMES.clear()
+
+    #per-telescope category counts, e.g. {"07m": {"galaxy": 2}}
+    quotas = {}
+    for label, wanted in (cfg.get("quotas") or {}).items():
+        clean = {c: int(n) for c, n in wanted.items() if n is not None and str(n) != ""}
+        if clean:
+            quotas[label] = clean
+
     counts = {m: int(n) for m, n in cfg.get("counts", {}).items()}
     roster = build_roster(counts)
     if not roster:
@@ -83,6 +97,7 @@ def _run(cfg):
         roster=roster,
         num_slots=None,
         slots_by_group=slots_by_group,
+        quotas_by_telescope=quotas or None,
         min_altitude=float(cfg.get("min_altitude", 30)),
         num_alternates=int(cfg.get("num_alternates", 3)),
         write_csv=False,
@@ -94,6 +109,7 @@ def _run(cfg):
         "date": out["date"],
         "start_time": out["start_time"],
         "end_time": out["end_time"],
+        "min_altitude": float(cfg.get("min_altitude", 30)),
         "groups": [],
         "telescopes": {},
     }
@@ -115,6 +131,12 @@ def _run(cfg):
                         "end": sched.dt_to_timestr(r["end"]),
                     })
                     continue
+                #altitude across the slot, for the page's click-to-inspect chart
+                track = [
+                    {"t": sched.dt_to_timestr(ts), "alt": float(a)}
+                    for ts, a in zip(r.get("track_times", []), r.get("track", []))
+                ]
+
                 rows.append({
                     "object": r["object"],
                     "name": _display_name(r["object"]),
@@ -125,6 +147,7 @@ def _run(cfg):
                     "repeat": bool(r.get("repeat", False)),
                     "start": sched.dt_to_timestr(r["start"]),
                     "end": sched.dt_to_timestr(r["end"]),
+                    "track": track,
                 })
 
             alternates = []
@@ -143,6 +166,7 @@ def _run(cfg):
 
             payload["telescopes"][label] = {
                 "label": label,
+                "sheet_title": inst["sheet_title"],
                 "notes": res["notes"],
                 "display": res["display"],
                 "model": inst["model"],
@@ -154,6 +178,10 @@ def _run(cfg):
                 "observable": observable,
                 "csv": res["csv"],
             }
+
+            #the exact table that goes in the CSV and the combined sheet
+            _FRAMES[label] = sched.build_catalog_frames(
+                res["schedule"], cfg["date"], df_alternates=res["alternates"])[0]
 
     payload["checks"] = _coupling_report(payload)
 
@@ -265,3 +293,27 @@ def zip_bundle(result_json):
         for label, tel in data["telescopes"].items():
             zf.writestr(f"catalog_{label}.csv", tel["csv"])
     return base64.b64encode(buf.getvalue()).decode("ascii")
+
+
+def workbook_bundle(result_json):
+    """Every telescope down one sheet, as .xlsx, base64 for download.
+
+    This is the sheet that gets shared: import it straight into Google Sheets.
+    """
+    data = json.loads(result_json)
+
+    #keep the on-screen order: group by group, telescope by telescope
+    sections = []
+    for group in data["groups"]:
+        for label in group["telescopes"]:
+            frame = _FRAMES.get(label)
+            if frame is None:
+                continue
+            title = data["telescopes"][label].get("sheet_title", label)
+            sections.append((title, frame))
+
+    if not sections:
+        raise RuntimeError("Nothing to export -- make a schedule first.")
+
+    sheet = spreadsheet.combined_sheet(sections, sheet_name="Schedule")
+    return base64.b64encode(spreadsheet.write_xlsx(sheet)).decode("ascii")

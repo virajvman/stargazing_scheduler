@@ -371,3 +371,108 @@ code {
   details > summary { list-style: none; font-size: 1rem; }
   details[open] table.detail { display: table; }
 }
+
+/* --- per-telescope category counts (under Options) --- */
+
+.sub-legend {
+  font-size: .78rem;
+  font-weight: 650;
+  text-transform: uppercase;
+  letter-spacing: .06em;
+  color: var(--dim);
+  margin: 18px 0 8px;
+}
+
+table.quota { border-collapse: collapse; font-size: .82rem; }
+
+table.quota th, table.quota td {
+  padding: 3px 8px 3px 0;
+  text-align: left;
+  font-weight: 400;
+}
+
+table.quota thead th {
+  color: var(--dim);
+  font-size: .72rem;
+  white-space: nowrap;
+  vertical-align: bottom;
+}
+
+table.quota tbody th {
+  font-weight: 620;
+  white-space: nowrap;
+  padding-right: 14px;
+}
+
+table.quota input { width: 3.4rem; padding: 4px 6px; font-size: .82rem; }
+table.quota td.quota-na { color: var(--dim); opacity: .5; padding-left: 4px; }
+
+/* --- elevation across a slot, revealed by clicking the sub-text --- */
+
+.sub-toggle {
+  display: block;
+  background: none;
+  border: 0;
+  padding: 1px 0 0;
+  margin: 0;
+  font: inherit;
+  color: var(--dim);
+  font-size: .76rem;
+  font-weight: 400;
+  text-align: left;
+  cursor: pointer;
+  text-decoration: underline;
+  text-decoration-style: dotted;
+  text-decoration-color: var(--line);
+  text-underline-offset: 2px;
+}
+
+.sub-toggle:hover { color: var(--fg); text-decoration-color: var(--accent); }
+.sub-toggle[aria-expanded="true"] { color: var(--fg); }
+
+.track { margin-top: 7px; }
+
+.track-line {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 1.6;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+
+.track-dot { fill: var(--accent); }
+
+.track-axis {
+  fill: var(--dim);
+  font-size: 7.5px;
+  font-family: inherit;
+}
+
+.track-limit { stroke-width: 1; stroke-dasharray: 3 2; }
+.track-limit.limit-low { stroke: var(--dim); }
+.track-limit.limit-high { stroke: var(--c-planet); }
+
+.track-limit-label {
+  fill: var(--dim);
+  font-size: 7px;
+  font-family: inherit;
+}
+
+.track-summary {
+  font-size: .76rem;
+  color: var(--fg);
+  font-variant-numeric: tabular-nums;
+  margin-top: 1px;
+}
+
+.track-warn {
+  font-size: .73rem;
+  color: var(--c-planet);
+  margin-top: 2px;
+  max-width: 16rem;
+}
+
+@media print {
+  .sub-toggle { text-decoration: none; color: var(--dim); }
+  .track { display: none; }
+}

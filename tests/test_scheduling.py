@@ -7,13 +7,16 @@ catalog), so it is safe to run anywhere:
     python tests/test_scheduling.py
 """
 
+import io
 import json
 import os
+import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import code as sched
+import spreadsheet
 import target_lists as T
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -260,6 +263,110 @@ def test_quotas_and_back_compat():
           all(k in out for k in ("time_local_datetimes", "alts_cluster", "df_cluster")))
 
 
+def test_combined_workbook():
+    """The .xlsx we hand round: valid zip, well-formed XML, right shape."""
+    print("\ncombined spreadsheet")
+    import xml.etree.ElementTree as ET
+    import zipfile as zf_mod
+
+    roster = T.build_roster({"24inch": 1, "07m": 1, "evscope": 2})
+    out = sched.schedule_night("2026-08-03", "21:15", "22:45", roster=roster,
+                               verbose=False)
+
+    sections = []
+    for g in out["groups"]:
+        for label in g["telescopes"]:
+            res = out["telescopes"][label]
+            inst = next(t for t in roster if t["label"] == label)
+            frame = sched.build_catalog_frames(
+                res["schedule"], "2026-08-03", df_alternates=res["alternates"])[0]
+            sections.append((inst["sheet_title"], frame))
+
+    data = spreadsheet.write_xlsx(spreadsheet.combined_sheet(sections))
+
+    check("starts with the zip magic bytes", data[:4] == b"PK\x03\x04")
+
+    try:
+        zf = zf_mod.ZipFile(io.BytesIO(data))
+    except Exception as exc:
+        check("is a readable zip", False, str(exc))
+        return
+
+    needed = ["[Content_Types].xml", "_rels/.rels", "xl/workbook.xml",
+              "xl/_rels/workbook.xml.rels", "xl/styles.xml",
+              "xl/worksheets/sheet1.xml", "xl/worksheets/_rels/sheet1.xml.rels"]
+    missing = [n for n in needed if n not in zf.namelist()]
+    check("holds every part a reader needs", not missing, f"missing {missing}")
+
+    bad = []
+    for name in zf.namelist():
+        try:
+            ET.fromstring(zf.read(name))
+        except ET.ParseError as exc:
+            bad.append(f"{name}: {exc}")
+    check("every part is well-formed XML", not bad, "; ".join(bad))
+
+    sheet = zf.read("xl/worksheets/sheet1.xml").decode()
+    for title, _ in sections:
+        if f"<t>{title}</t>" not in sheet:
+            check(f"section {title!r} is present", False, "title row missing")
+            break
+    else:
+        check("every telescope gets its own titled section", True)
+
+    #hyperlink ids in the sheet must all resolve in its rels part
+    rels = zf.read("xl/worksheets/_rels/sheet1.xml.rels").decode()
+    ids = set(re.findall(r'<hyperlink ref="[^"]+" r:id="(rId\d+)"/>', sheet))
+    defined = set(re.findall(r'Id="(rId\d+)"', rels))
+    check("every hyperlink resolves to a target", ids and ids <= defined,
+          f"{len(ids)} links, {len(ids - defined)} dangling")
+
+    #ampersands in YouTube URLs are the classic way to produce broken XML
+    check("URLs with & are escaped", "&amp;" in rels or "&" not in rels,
+          "raw ampersand in the rels part")
+
+    #elevations stay numeric so the column can be sorted in Sheets
+    check("elevation is written as a number",
+          re.search(r'<c r="C\d+"><v>\d', sheet) is not None)
+
+
+def test_interval_has_meridian():
+    print("\ninterval labels")
+    import pandas as pd
+    a = pd.to_datetime("2026-08-03 21:15")
+    b = pd.to_datetime("2026-08-03 21:45")
+    check("reads like the shared sheet", sched.interval_to_str(a, b) == "9:15-9:45pm",
+          sched.interval_to_str(a, b))
+
+    a = pd.to_datetime("2026-08-03 23:45")
+    b = pd.to_datetime("2026-08-04 00:15")
+    check("both meridians when it crosses midnight",
+          sched.interval_to_str(a, b) == "11:45pm-12:15am", sched.interval_to_str(a, b))
+
+
+def test_per_object_outreach_links():
+    print("\noutreach links")
+    roster = T.build_roster({"07m": 1})
+    out = sched.schedule_night("2026-08-03", "21:15", "22:45", roster=roster,
+                               verbose=False)
+    frame = out["telescopes"]["07m"]["catalog"]
+
+    rows = frame[frame["Catalog Name"].isin(T.outreach_link_by_object)]
+    if len(rows) == 0:
+        print("        (no objects with a specific link were scheduled)")
+        return
+    wrong = [r["Catalog Name"] for _, r in rows.iterrows()
+             if r["Outreach Info"] != T.outreach_link_by_object[r["Catalog Name"]]]
+    check("an object's own link beats its category link", not wrong, str(wrong))
+
+    #and everything else still gets the category link rather than a blank
+    others = frame[(~frame["Catalog Name"].isin(T.outreach_link_by_object))
+                   & (frame["Object Type"].isin(["galaxy", "nebula", "planet",
+                                                 "Open Cluster", "Globular Cluster"]))]
+    blank = [r["Catalog Name"] for _, r in others.iterrows() if not r["Outreach Info"]]
+    check("objects without one fall back to the category link", not blank, str(blank))
+
+
 def main():
     catalog = load_catalog()
     print(f"catalog: {len(catalog['objects'])} objects, built {catalog.get('generated')}")
@@ -273,6 +380,9 @@ def main():
     test_contended_object_is_not_double_booked()
     test_slot_recommendation()
     test_quotas_and_back_compat()
+    test_interval_has_meridian()
+    test_per_object_outreach_links()
+    test_combined_workbook()
 
     print()
     if failures:

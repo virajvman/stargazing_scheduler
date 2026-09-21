@@ -88,6 +88,51 @@ binds first:
 Override it per group under **Options** if a night feels rushed or draggy, and
 adjust `minutes_per_target` in `target_lists.py` if the default pacing is wrong.
 
+### How many of each kind of object
+
+Also under **Options**: a grid of per-telescope category counts. Blank means
+choose freely, a number pins that many, and `0` rules a category out. Partial
+specifications are fine — asking for 2 galaxies on a 4-target telescope fixes two
+slots and leaves the other two open. This is the web equivalent of
+`main_scheduler(num_cluster=1, num_galaxy=2, ...)`, and in Python it is
+`schedule_night(quotas_by_telescope={"07m": {"galaxy": 2}})`.
+
+## Getting the schedule out
+
+**Download spreadsheet** gives one `.xlsx` with every telescope down a single
+sheet — coloured title per telescope, header row, its schedule, then its
+alternate targets — matching the sheet the observatory already shares. Import it
+straight into Google Sheets (File → Import) and the formatting, numeric
+elevations and clickable links come with it.
+
+**CSVs** gives the per-telescope `catalog_<label>.csv` files in a zip, the same
+files the notebook writes to `output/`.
+
+Both include the **alternate targets** block: the three highest unscheduled
+objects that telescope could still reach, marked "earlier in the night" or
+"later at night", for when something goes wrong or you are ahead of schedule.
+
+The `.xlsx` is written by [`spreadsheet.py`](spreadsheet.py), a ~260-line writer
+built for exactly the formatting this sheet needs. Pyodide ships no spreadsheet
+library, and pulling one from PyPI at click time would make a core feature depend
+on the network, which the rest of the design deliberately avoids.
+
+### Clicking an elevation
+
+In the schedule grid, the small "68° rising" under each object opens a chart of
+that object's elevation across its own slot, with the altitude floor and (where
+it applies) the zenith limit drawn in. Useful when a target only just clears the
+floor: it will tell you it drops from 34° to 31° while you are on it, and warn
+you outright if it crosses a limit mid-slot.
+
+### Outreach links
+
+`outreach_link_by_object` in `target_lists.py` holds a link for a specific object,
+which beats the per-category one in `outreach_link`. It is seeded with the 18
+links found in the shared August sheet, so those rows export ready to send.
+Objects without one fall back to the category link, so adding entries is purely
+an improvement.
+
 ## Adding or changing targets
 
 1. Edit the lists in [`target_lists.py`](target_lists.py).

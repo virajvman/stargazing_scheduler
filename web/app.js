@@ -18,6 +18,7 @@ const state = {
   classes: [],
   counts: {},
   groupSettings: {},
+  quotas: {},          // label -> {class: count} ; blank means free choice
   lastResult: null,
 };
 
@@ -90,6 +91,126 @@ function cell(text, cls) {
   return td;
 }
 
+/* Small elevation-vs-time chart for one scheduled slot. Auto-scales to the
+   track, because over half an hour a target often moves only a degree or two and
+   a fixed 0-90 axis would show a flat line. */
+function trackChart(row, minAltitude, maxAltitude) {
+  const pts = row.track || [];
+  const wrap = document.createElement('div');
+  wrap.className = 'track';
+
+  if (pts.length < 2) {
+    wrap.textContent = 'No altitude samples for this slot.';
+    return wrap;
+  }
+
+  const alts = pts.map((p) => p.alt);
+  const lo = Math.min(...alts);
+  const hi = Math.max(...alts);
+
+  //keep a little headroom, and pull in the limits when they are close by
+  let yMin = Math.floor(lo - 2);
+  let yMax = Math.ceil(hi + 2);
+  if (minAltitude >= yMin - 4 && minAltitude <= hi) yMin = Math.min(yMin, minAltitude - 1);
+  if (maxAltitude !== null && maxAltitude >= lo && maxAltitude <= yMax + 4) {
+    yMax = Math.max(yMax, maxAltitude + 1);
+  }
+  yMin = Math.max(0, yMin);
+  yMax = Math.min(90, Math.max(yMax, yMin + 4));
+
+  const W = 168, H = 56, PL = 30, PR = 6, PT = 6, PB = 14;
+  const x = (i) => PL + (i / (pts.length - 1)) * (W - PL - PR);
+  const y = (a) => PT + (1 - (a - yMin) / (yMax - yMin)) * (H - PT - PB);
+
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+  svg.setAttribute('width', String(W));
+  svg.setAttribute('height', String(H));
+  svg.setAttribute('role', 'img');
+  svg.setAttribute('aria-label',
+    `Altitude from ${alts[0].toFixed(0)} to ${alts[alts.length - 1].toFixed(0)} degrees ` +
+    `between ${pts[0].t} and ${pts[pts.length - 1].t}`);
+
+  const mk = (tag, attrs) => {
+    const n = document.createElementNS('http://www.w3.org/2000/svg', tag);
+    for (const [k, v] of Object.entries(attrs)) n.setAttribute(k, String(v));
+    return n;
+  };
+
+  //the limits, where they are in view
+  for (const [value, cls, label] of [
+    [minAltitude, 'limit-low', 'floor'],
+    [maxAltitude, 'limit-high', 'cap'],
+  ]) {
+    if (value === null || value === undefined) continue;
+    if (value < yMin || value > yMax) continue;
+    svg.append(mk('line', {
+      x1: PL, x2: W - PR, y1: y(value), y2: y(value),
+      class: `track-limit ${cls}`,
+    }));
+    const t = mk('text', { x: W - PR, y: y(value) - 2, class: 'track-limit-label' });
+    t.setAttribute('text-anchor', 'end');
+    t.textContent = label;
+    svg.append(t);
+  }
+
+  //y axis: just the two ends, which is all that is needed for reference
+  for (const v of [yMax, yMin]) {
+    const t = mk('text', { x: PL - 4, y: y(v) + 3, class: 'track-axis' });
+    t.setAttribute('text-anchor', 'end');
+    t.textContent = `${v}°`;
+    svg.append(t);
+  }
+
+  svg.append(mk('polyline', {
+    class: 'track-line',
+    points: pts.map((p, i) => `${x(i)},${y(p.alt)}`).join(' '),
+  }));
+
+  svg.append(mk('circle', { class: 'track-dot', cx: x(0), cy: y(alts[0]), r: 2.2 }));
+  svg.append(mk('circle', {
+    class: 'track-dot', cx: x(pts.length - 1), cy: y(alts[alts.length - 1]), r: 2.2,
+  }));
+
+  for (const [i, anchor] of [[0, 'start'], [pts.length - 1, 'end']]) {
+    const t = mk('text', { x: x(i), y: H - 3, class: 'track-axis' });
+    t.setAttribute('text-anchor', anchor);
+    t.textContent = pts[i].t;
+    svg.append(t);
+  }
+
+  wrap.append(svg);
+
+  const first = alts[0], last = alts[alts.length - 1];
+  const delta = last - first;
+  const summary = document.createElement('div');
+  summary.className = 'track-summary';
+  const moved = Math.abs(delta) < 0.5
+    ? 'holding steady'
+    : `${delta > 0 ? 'climbing' : 'dropping'} ${Math.abs(delta).toFixed(0)}°`;
+  summary.textContent =
+    `${first.toFixed(0)}° → ${last.toFixed(0)}°, ${moved}`;
+  wrap.append(summary);
+
+  //the things that actually bite during a slot
+  const warn = [];
+  if (alts.some((a) => a < minAltitude)) {
+    warn.push(`dips below the ${minAltitude}° floor before the slot ends`);
+  }
+  if (maxAltitude !== null && alts.some((a) => a > maxAltitude)) {
+    warn.push(`crosses the ${maxAltitude}° zenith limit during the slot`);
+  }
+  if (warn.length) {
+    const w = document.createElement('div');
+    w.className = 'track-warn';
+    w.textContent = warn.join('; ');
+    wrap.append(w);
+  }
+
+  return wrap;
+}
+
+
 /* ------------------------------------------------------------ python set-up */
 
 async function bootPython() {
@@ -102,9 +223,10 @@ async function bootPython() {
 
   // cache-bust so an edited code.py is picked up rather than served stale
   const stamp = `?v=${Date.now()}`;
-  const [codePy, targetsPy, bridgePy, catalogText] = await Promise.all([
+  const [codePy, targetsPy, sheetPy, bridgePy, catalogText] = await Promise.all([
     fetch('code.py' + stamp).then((r) => r.text()),
     fetch('target_lists.py' + stamp).then((r) => r.text()),
+    fetch('spreadsheet.py' + stamp).then((r) => r.text()),
     fetch('web/bridge.py' + stamp).then((r) => r.text()),
     fetch('web/catalog.json' + stamp).then((r) => r.text()),
   ]);
@@ -112,6 +234,7 @@ async function bootPython() {
   const fs = state.pyodide.FS;
   fs.writeFile('/home/pyodide/code.py', codePy);
   fs.writeFile('/home/pyodide/target_lists.py', targetsPy);
+  fs.writeFile('/home/pyodide/spreadsheet.py', sheetPy);
   fs.writeFile('/home/pyodide/bridge.py', bridgePy);
   fs.writeFile('/home/pyodide/catalog.json', catalogText);
 
@@ -163,8 +286,10 @@ function resetToDefaults() {
     // null = let the scheduler recommend a count from the window and the sky
     state.groupSettings[g.name] = { coupling: g.coupling, num_slots: null };
   }
+  state.quotas = {};
   renderTelescopes();
   renderGroups();
+  renderQuotas();
 }
 
 function renderTelescopes() {
@@ -204,6 +329,7 @@ function renderTelescopes() {
         state.counts[m.model] = Math.min(m.max_count, Math.max(0, n + delta));
         renderTelescopes();
         renderGroups();
+        renderQuotas();
       });
       return b;
     };
@@ -237,6 +363,93 @@ function groupMembers(group) {
   }
   return labels;
 }
+
+/* Per-telescope category counts. Blank means "choose freely", a number pins that
+   many of that category, and 0 rules it out. Partial specs are fine: asking for
+   2 galaxies on a 4-target telescope leaves the other 2 slots open. */
+function renderQuotas() {
+  const host = el('quota-list');
+  if (!host) return;
+  host.textContent = '';
+
+  const roster = [];
+  for (const g of GROUPS) {
+    for (const label of groupMembers(g)) {
+      const model = state.models.find(
+        (m) => label === m.model || label.startsWith(`${m.model}_`));
+      if (model) roster.push({ label, model });
+    }
+  }
+
+  if (roster.length === 0) {
+    const p = document.createElement('p');
+    p.className = 'muted small';
+    p.textContent = 'No telescopes selected.';
+    host.append(p);
+    return;
+  }
+
+  const table = document.createElement('table');
+  table.className = 'quota';
+
+  const thead = document.createElement('thead');
+  const hrow = document.createElement('tr');
+  hrow.append(document.createElement('th'));
+  for (const c of state.classes) {
+    const th = document.createElement('th');
+    th.textContent = c.display;
+    hrow.append(th);
+  }
+  thead.append(hrow);
+
+  const tbody = document.createElement('tbody');
+  for (const entry of roster) {
+    const tr = document.createElement('tr');
+    const th = document.createElement('th');
+    th.scope = 'row';
+    th.textContent = entry.label;
+    tr.append(th);
+
+    for (const c of state.classes) {
+      const td = document.createElement('td');
+      const available = entry.model.target_counts[c.key] || 0;
+
+      if (available === 0) {
+        td.className = 'quota-na';
+        td.textContent = '\u2013';
+        td.title = `${entry.model.display} has no ${c.display.toLowerCase()} in its list`;
+      } else {
+        const input = document.createElement('input');
+        input.type = 'number';
+        input.min = '0';
+        input.max = String(available);
+        input.placeholder = 'any';
+        input.setAttribute('aria-label', `${entry.label}: how many ${c.display}`);
+        input.title = `${available} in its list. Blank = choose freely, 0 = none.`;
+        const current = (state.quotas[entry.label] || {})[c.key];
+        input.value = current === undefined ? '' : String(current);
+        input.addEventListener('change', () => {
+          const parsed = parseInt(input.value, 10);
+          state.quotas[entry.label] = state.quotas[entry.label] || {};
+          if (Number.isFinite(parsed) && parsed >= 0) {
+            state.quotas[entry.label][c.key] = Math.min(parsed, available);
+            input.value = String(state.quotas[entry.label][c.key]);
+          } else {
+            delete state.quotas[entry.label][c.key];
+            input.value = '';
+          }
+        });
+        td.append(input);
+      }
+      tr.append(td);
+    }
+    tbody.append(tr);
+  }
+
+  table.append(thead, tbody);
+  host.append(table);
+}
+
 
 function renderGroups() {
   const host = el('group-list');
@@ -306,6 +519,7 @@ function buildConfig() {
     end_time: el('end-time').value,
     min_altitude: parseFloat(el('min-altitude').value),
     counts: state.counts,
+    quotas: state.quotas,
     groups,
   };
 }
@@ -432,11 +646,26 @@ function renderTimelines(result) {
           obj.className = 'obj';
           obj.append(catDot(row.cls), document.createTextNode(row.name));
 
-          const sub = document.createElement('span');
-          sub.className = 'sub';
+          //the sub-text opens the elevation across this slot
+          const sub = document.createElement('button');
+          sub.type = 'button';
+          sub.className = 'sub sub-toggle';
+          sub.setAttribute('aria-expanded', 'false');
+          sub.title = 'Show how the elevation changes across this slot';
           sub.textContent = `${row.elev}° ${row.path}` + (row.repeat ? ' · again' : '');
 
           td.append(obj, sub);
+
+          sub.addEventListener('click', () => {
+            const open = td.querySelector('.track');
+            if (open) {
+              open.remove();
+              sub.setAttribute('aria-expanded', 'false');
+              return;
+            }
+            td.append(trackChart(row, result.min_altitude, scope.max_altitude));
+            sub.setAttribute('aria-expanded', 'true');
+          });
         }
         tr.append(td);
       }
@@ -576,13 +805,32 @@ function renderTables(result) {
 
 /* ---------------------------------------------------------------- downloads */
 
-function downloadAll() {
+function downloadFromPython(call, filename, mime) {
   if (!state.lastResult) return;
-  state.pyodide.globals.set('_result_json', JSON.stringify(state.lastResult));
-  const b64 = state.pyodide.runPython('bridge.zip_bundle(_result_json)');
-  const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
-  downloadBlob(new Blob([bytes], { type: 'application/zip' }),
-               `stargazing_${state.lastResult.date}.zip`);
+  clearError();
+  try {
+    state.pyodide.globals.set('_result_json', JSON.stringify(state.lastResult));
+    const b64 = state.pyodide.runPython(call);
+    const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+    downloadBlob(new Blob([bytes], { type: mime }), filename);
+  } catch (err) {
+    showError('Could not build the download: ' +
+              String(err && err.message ? err.message : err));
+  }
+}
+
+function downloadAll() {
+  downloadFromPython('bridge.zip_bundle(_result_json)',
+                     `stargazing_${state.lastResult.date}_csvs.zip`,
+                     'application/zip');
+}
+
+/* The sheet that actually gets shared: every telescope down one page, ready to
+   import into Google Sheets. */
+function downloadWorkbook() {
+  downloadFromPython('bridge.workbook_bundle(_result_json)',
+                     `stargazing_list_${state.lastResult.date}.xlsx`,
+                     'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
 }
 
 /* ----------------------------------------------------------------- start-up */
@@ -594,6 +842,7 @@ async function main() {
     ev.preventDefault();
     generate();
   });
+  el('download-sheet').addEventListener('click', downloadWorkbook);
   el('download-zip').addEventListener('click', downloadAll);
   el('print-view').addEventListener('click', () => window.print());
   el('advanced-toggle').addEventListener('click', () => {

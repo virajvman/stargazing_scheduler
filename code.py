@@ -9,8 +9,9 @@ from astropy.time import Time
 from astropy.coordinates import SkyCoord, EarthLocation, AltAz
 import astropy.units as u
 from astropy.coordinates import EarthLocation, AltAz, get_body
-from target_lists import (common_name, outreach_link, cluster_type_mapping,
-                          OBJECT_CLASSES, TELESCOPE_MODELS, build_roster, default_groups)
+from target_lists import (common_name, outreach_link, outreach_link_by_object,
+                          cluster_type_mapping, OBJECT_CLASSES, TELESCOPE_MODELS,
+                          build_roster, default_groups)
 import pytz
 from datetime import datetime
 
@@ -596,6 +597,21 @@ def dt_to_timestr(dt):
     return dt.strftime("%I:%M").lstrip("0")
 
 
+def interval_to_str(start, end):
+    '''
+    "9:15-9:45pm", the way the shared spreadsheet reads.
+
+    The meridian goes on once when both ends share it, and on both when a session
+    runs through midnight ("11:45pm-12:15am").
+    '''
+    start_m = start.strftime("%p").lower()
+    end_m = end.strftime("%p").lower()
+
+    if start_m == end_m:
+        return f"{dt_to_timestr(start)}-{dt_to_timestr(end)}{end_m}"
+    return f"{dt_to_timestr(start)}{start_m}-{dt_to_timestr(end)}{end_m}"
+
+
 
 def _build_row_dict(name_i, obj_type, elev, trajectory, interval_str, date_splits):
     '''
@@ -623,15 +639,14 @@ def _build_row_dict(name_i, obj_type, elev, trajectory, interval_str, date_split
 
     row["Visibility Link"] = create_observability_link(name_i, date_splits[2], date_splits[1], date_splits[0])
 
-    #outreach link by resolved object type
-    if row["Object Type"] == "Open Cluster" or row["Object Type"] == "Globular Cluster":
+    #A link for this exact object beats the generic one for its category, so the
+    #shared sheet needs no hand-editing where we have one.
+    if name_i in outreach_link_by_object:
+        row["Outreach Info"] = outreach_link_by_object[name_i]
+    elif row["Object Type"] in ("Open Cluster", "Globular Cluster"):
         row["Outreach Info"] = outreach_link[row["Object Type"]]
-    elif row["Object Type"] == "galaxy":
-        row["Outreach Info"] = outreach_link["galaxy"]
-    elif row["Object Type"] == "planet":
-        row["Outreach Info"] = outreach_link["planet"]
-    elif row["Object Type"] == "nebula":
-        row["Outreach Info"] = outreach_link["nebula"]
+    elif row["Object Type"] in ("galaxy", "planet", "nebula"):
+        row["Outreach Info"] = outreach_link[row["Object Type"]]
     else:
         row["Outreach Info"] = ""
 
@@ -693,7 +708,7 @@ def build_catalog_frames(df, date, split_table=1, df_alternates=None):
         if name_i is None:
             #a slot nothing could fill; nothing to print for it
             continue
-        interval_str = dt_to_timestr(df["start"][i]) + "-" + dt_to_timestr(df["end"][i])
+        interval_str = interval_to_str(df["start"][i], df["end"][i])
         row = _build_row_dict(
             name_i,
             df["type"][i],
@@ -1079,26 +1094,55 @@ def select_group_ordering(times, intervals, midpoints, telescopes, candidates_by
     repeat_penalty = GROUP_REPEAT_PENALTY.get(coupling, 150.0)
     notes = []                                            #anything the operator should know
 
-    #how many of each category each telescope has been asked for, if anything
+    #which samples of the time grid fall inside each interval
+    interval_bounds = []
+    for start, end in intervals:
+        lo = int(np.searchsorted(time_np, np.datetime64(start), side="left"))
+        hi = int(np.searchsorted(time_np, np.datetime64(end), side="right")) - 1
+        lo = min(max(lo, 0), len(time_np) - 1)
+        hi = min(max(hi, lo), len(time_np) - 1)
+        interval_bounds.append((lo, hi))
+
+    #How many of each category each telescope has been asked for, if anything.
+    #A quota is both a ceiling (it stops offering a category once filled) and a
+    #target (see the reservation below), so "2 galaxies" on a 4-target telescope
+    #means exactly two, and the other two slots are chosen freely.
     quota_left = {}
     for t in telescopes:
         quotas = t.get("quotas")
-        quota_left[t["label"]] = dict(quotas) if quotas else None
+        quota_left[t["label"]] = {c: int(n) for c, n in quotas.items()} if quotas else None
 
     for k, mp in enumerate(midpoints):
         idx_time = int(np.argmin(np.abs(time_np - np.datetime64(mp))))
 
         #what can each telescope point at right now, ranked within each category
+        slots_left = len(midpoints) - k
+
         def pointable(t, allow_used):
             max_altitude = t.get("max_altitude")
             quotas = quota_left[t["label"]]
+
+            #Once the slots left only just cover what has still been asked for,
+            #stop offering anything else -- otherwise a request for "2 galaxies"
+            #quietly loses to whatever happens to be higher in the sky.
+            owed = None
+            if quotas is not None:
+                owed = {c: n for c, n in quotas.items() if n > 0}
+                if sum(owed.values()) < slots_left:
+                    owed = None
+
             by_class = {}
             for cand in candidates_by_tel[t["label"]]:
                 if not allow_used and cand["name"] in used[t["label"]]:
                     continue
-                #a telescope asked for e.g. exactly one cluster stops offering
-                #clusters once it has had one
-                if quotas is not None and quotas.get(cand["cls"], 0) <= 0:
+                #A telescope asked for e.g. one cluster stops offering clusters
+                #once it has had one. Categories the caller did not mention are
+                #unrestricted, so asking for "2 galaxies" pins two slots and
+                #leaves the rest free -- and an explicit 0 bans a category.
+                if quotas is not None and cand["cls"] in quotas \
+                        and quotas[cand["cls"]] <= 0:
+                    continue
+                if owed is not None and cand["cls"] not in owed:
                     continue
                 if not altitude_in_band(cand["alts"][idx_time], min_altitude, max_altitude):
                     continue
@@ -1188,6 +1232,12 @@ def select_group_ordering(times, intervals, midpoints, telescopes, candidates_by
                 nxt = min(idx_time + 1, len(alts) - 1)
                 rising_flag = "rising" if alts[nxt] > alts[idx_time] else "falling"
 
+                #altitude across the slot itself, so the operator can see where
+                #it will be when they actually get to it
+                lo, hi = interval_bounds[k]
+                track = [round(float(a), 1) for a in alts[lo:hi + 1]]
+                track_times = [times[i] for i in range(lo, hi + 1)]
+
                 schedules[t["label"]].append({
                     'object': name,
                     'type': cls,
@@ -1196,11 +1246,14 @@ def select_group_ordering(times, intervals, midpoints, telescopes, candidates_by
                     'elev': int(alts[idx_time]),
                     'path': rising_flag,
                     'repeat': name in used[t["label"]],
+                    'track': track,
+                    'track_times': track_times,
                 })
 
                 used[t["label"]].add(name)
                 shown_in_group.add(name)
-                if quota_left[t["label"]] is not None:
+                #only count down against categories that were actually asked for
+                if quota_left[t["label"]] is not None and cls in quota_left[t["label"]]:
                     quota_left[t["label"]][cls] -= 1
             else:
                 #nothing pointable: keep the row so every telescope in the group
@@ -1213,6 +1266,8 @@ def select_group_ordering(times, intervals, midpoints, telescopes, candidates_by
                     'elev': None,
                     'path': None,
                     'repeat': False,
+                    'track': [],
+                    'track_times': [],
                 })
 
         if verbose:
@@ -1401,6 +1456,9 @@ def schedule_group(date, start_time, end_time, telescopes, num_slots=None,
         interval grid is what makes "same category at the same time" meaningful.
         Pass None to let recommend_slots() work it out from the window length, the
         telescopes' pace and what is actually up.
+    telescopes[i]["quotas"] : optional {class: how many of that class to show}.
+        Counts that add up to fewer than num_slots pin down only those
+        categories and leave the remaining slots free.
     coupling : "match" (domes), "diverse" (portables) or "none"
     min_altitude : floor in degrees, applied to every telescope
     write_csv : also write output_dir/catalog_<label>.csv
@@ -1452,10 +1510,11 @@ def schedule_group(date, start_time, end_time, telescopes, num_slots=None,
 
     for t in telescopes:
         quotas = t.get("quotas")
-        if quotas and sum(quotas.values()) != num_slots:
+        if quotas and sum(quotas.values()) > num_slots:
             raise ValueError(
-                f"{t['label']}: per-category counts add up to {sum(quotas.values())} "
-                f"but the group has {num_slots} slots per telescope"
+                f"{t['label']}: per-category counts add up to "
+                f"{sum(quotas.values())} but it only has {num_slots} slots tonight. "
+                f"Raise 'targets each' for its group, or ask for fewer."
             )
 
     intervals, midpoints, minutes_per_target = build_intervals(

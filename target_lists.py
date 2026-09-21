@@ -108,7 +108,36 @@ common_name: dict[str, str] = {
     "NGC7023": "Iris Nebula",
     "NGC7662": "Blue Snowball Nebula",
     "HIP26549": "Sigma-Orionis",
-    "HIP36850": "Castor"
+    "HIP36850": "Castor",
+    "HIP91919": "Epsilon Lyrae",
+    "HIP92728": "Delta1 Lyrae",
+    "HIP95947": "Albireo",
+}
+
+
+#Per-object outreach links, which beat the per-category ones in `outreach_link`
+#when present. Harvested from the spreadsheet the observatory already shares, so
+#the exported sheet needs no hand-editing for these. Anything not listed falls
+#back to the category link, so adding entries here is purely an improvement.
+outreach_link_by_object: dict[str, str] = {
+    "HIP91919": "https://en.wikipedia.org/wiki/Epsilon_Lyrae",
+    "HIP92728": "https://en.wikipedia.org/wiki/Delta1_Lyrae",
+    "HIP95947": "https://en.wikipedia.org/wiki/Albireo",
+    "M2": "https://www.youtube.com/watch?v=Ae2_AILda-w",
+    "M3": "https://www.youtube.com/watch?v=tl836xXiNj4",
+    "M11": "https://www.youtube.com/watch?v=8ye5hCcGM5Q",
+    "M13": "https://www.youtube.com/watch?v=HISG5N04P2A",
+    "M15": "https://www.youtube.com/watch?v=S-vLAg3bNDk",
+    "M27": "https://www.youtube.com/watch?v=uP6eChP7i44",
+    "M51": "https://www.youtube.com/watch?v=yiv6a8BVzPE",
+    "M57": "https://www.youtube.com/watch?v=_TovLkVHfZE",
+    "M63": "https://www.youtube.com/watch?v=S0N98fMLkbU",
+    "M92": "https://www.youtube.com/watch?v=hjaGzXz6dWw",
+    "M101": "https://www.youtube.com/watch?v=flxa5hJV7OA",
+    "NGC5466": "https://en.wikipedia.org/wiki/NGC_5466",
+    "NGC6543": "https://www.youtube.com/watch?v=zvRmTaEjXPQ",
+    "NGC6946": "https://en.wikipedia.org/wiki/NGC_6946",
+    "NGC7023": "https://www.youtube.com/watch?v=aNJgQlJDPMY",
 }
 
 #the 8-inch and the 10-inch Dob get pointed at the same things, so they share one
@@ -158,6 +187,7 @@ ZENITH_LIMIT_EVSCOPE = 80.0
 TELESCOPE_MODELS: dict[str, dict] = {
     "24inch": {
         "display": '24-inch Dome',
+        "sheet_title": "24-inch",
         "kind": "dome",
         "minutes_per_target": 30,  # a queue of visitors filing past one eyepiece
         "targets": objects_24inch,
@@ -167,6 +197,7 @@ TELESCOPE_MODELS: dict[str, dict] = {
     },
     "07m": {
         "display": "0.7 m Dome",
+        "sheet_title": "0.7m",
         "kind": "dome",
         "minutes_per_target": 25,  # same, but quicker to re-point
         "targets": objects_07m,
@@ -176,6 +207,7 @@ TELESCOPE_MODELS: dict[str, dict] = {
     },
     "evscope": {
         "display": "eVscope",
+        "sheet_title": "eVscope",
         "kind": "portable",
         "minutes_per_target": 15,  # automated, and variety is the whole point here
         "targets": objects_ev,
@@ -185,6 +217,7 @@ TELESCOPE_MODELS: dict[str, dict] = {
     },
     "5SE": {
         "display": "Celestron 5SE",
+        "sheet_title": "5SE",
         "kind": "portable",
         "minutes_per_target": 20,  # manual pointing, visual
         "targets": objects_5SE,
@@ -194,6 +227,7 @@ TELESCOPE_MODELS: dict[str, dict] = {
     },
     "10Dob": {
         "display": '10-inch Dobsonian',
+        "sheet_title": "10-inch Dob",
         "kind": "portable",
         "minutes_per_target": 20,  # manual pointing, visual
         "targets": objects_10Dob,
@@ -203,6 +237,7 @@ TELESCOPE_MODELS: dict[str, dict] = {
     },
     "8inch": {
         "display": '8-inch',
+        "sheet_title": "8-inch",
         "kind": "portable",
         "minutes_per_target": 20,  # manual pointing, visual
         "targets": objects_8inch,
@@ -270,6 +305,8 @@ def build_roster(counts: dict[str, int] | None = None) -> list[dict]:
                 "targets": spec["targets"],
                 "max_altitude": spec["max_altitude"],
                 "minutes_per_target": spec["minutes_per_target"],
+                "sheet_title": (spec["sheet_title"] if n == 1
+                                else f"{spec['sheet_title']} {i + 1}"),
             })
     return roster
 

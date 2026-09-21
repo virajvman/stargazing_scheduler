@@ -40,6 +40,14 @@
         for the two domes, which are good at different things. <b>Matched</b> puts them all on
         the same kind at once, which suits two similar telescopes.
       </p>
+
+      <h3 class="sub-legend">How many of each kind</h3>
+      <div id="quota-list"></div>
+      <p class="muted small">
+        Blank means choose freely. A number pins that many &mdash; ask for 2 galaxies on a
+        4-target telescope and the other 2 slots stay open. <b>0</b> rules a kind out.
+        <span class="muted">&ndash;</span> means that telescope has none in its list.
+      </p>
     </div>
 
   </form>
@@ -50,7 +58,9 @@
     <div class="results-head">
       <h2 id="results-title"></h2>
       <div>
-        <button type="button" id="download-zip" class="primary">Download CSVs</button>
+        <button type="button" id="download-sheet" class="primary"
+                title="One sheet with every telescope &mdash; import straight into Google Sheets">Download spreadsheet</button>
+        <button type="button" id="download-zip" class="link">CSVs</button>
         <button type="button" id="print-view" class="link">Print</button>
       </div>
     </div>
