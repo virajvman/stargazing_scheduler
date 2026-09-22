@@ -13,14 +13,39 @@ blank line, then its alternate targets.
 
 import zipfile
 
-#the red used for telescope title rows in the shared sheet
-TITLE_FILL = "FFEA4335"
+#One colour per telescope section, so a volunteer can find their block by
+#colour alone. The first three are the Google palette the shared sheet already
+#uses; the rest keep neighbouring sections in different hues and stay light
+#enough for the bold black title text to read against them. There are more
+#colours here than the largest roster target_lists allows, so no two telescopes
+#on one night share one; beyond that the list just wraps round.
+TITLE_FILLS = [
+    "FFEA4335",  # red
+    "FF34A853",  # green
+    "FFFBBC04",  # yellow
+    "FF4FC3F7",  # light blue
+    "FFBA68C8",  # light purple
+    "FFFFA726",  # orange
+    "FF4DD0E1",  # cyan
+    "FFA1887F",  # light brown
+    "FFAED581",  # light green
+    "FFF06292",  # pink
+    "FF9FA8DA",  # periwinkle
+    "FFE6EE9C",  # lime
+    "FFBCAAA4",  # taupe
+]
 
 #style indices into the cellXfs table written by _styles_xml()
 STYLE_PLAIN = 0
 STYLE_BOLD = 1
-STYLE_TITLE = 2
-STYLE_LINK = 3
+STYLE_LINK = 2
+#the title styles follow, one per colour: STYLE_TITLE_BASE + colour index
+STYLE_TITLE_BASE = 3
+
+
+def title_style(index):
+    """cellXfs index for the title row of the index-th telescope."""
+    return STYLE_TITLE_BASE + (index % len(TITLE_FILLS))
 
 #column widths, keyed by 1-based column number, taken from the existing sheet
 DEFAULT_WIDTHS = {1: 18.0, 3: 14.9, 5: 18.0, 6: 20.5, 8: 72.0}
@@ -77,10 +102,14 @@ class Sheet:
             else:
                 value, style, link = cell, STYLE_PLAIN, None
 
-            if value is None or value == "":
-                continue
-
             ref = f"{_col_letter(i)}{row_number}"
+
+            if value is None or value == "":
+                #an empty cell still has to be written when it carries a fill,
+                #which is how a title row gets coloured across the full table
+                if style:
+                    out.append(f'<c r="{ref}" s="{style}"/>')
+                continue
             if link:
                 links.append((ref, link))
                 style = STYLE_LINK
@@ -124,8 +153,21 @@ class Sheet:
 
 
 def _styles_xml():
-    #Excel requires fill 0 to be "none" and fill 1 to be "gray125"; anything
-    #custom starts at index 2.
+    #Excel requires fill 0 to be "none" and fill 1 to be "gray125"; the telescope
+    #colours start at index 2, and each gets a matching cellXfs entry so a title
+    #row can be referenced by style alone.
+    colour_fills = "".join(
+        f'<fill><patternFill patternType="solid"><fgColor rgb="{rgb}"/>'
+        '<bgColor indexed="64"/></patternFill></fill>'
+        for rgb in TITLE_FILLS
+    )
+
+    title_xfs = "".join(
+        f'<xf numFmtId="0" fontId="2" fillId="{2 + i}" borderId="0" xfId="0"'
+        ' applyFont="1" applyFill="1"/>'
+        for i in range(len(TITLE_FILLS))
+    )
+
     return (
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
         '<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
@@ -135,19 +177,18 @@ def _styles_xml():
         '<font><b/><sz val="13"/><name val="Calibri"/></font>'
         '<font><u/><sz val="11"/><color rgb="FF0000FF"/><name val="Calibri"/></font>'
         '</fonts>'
-        '<fills count="3">'
+        f'<fills count="{2 + len(TITLE_FILLS)}">'
         '<fill><patternFill patternType="none"/></fill>'
         '<fill><patternFill patternType="gray125"/></fill>'
-        f'<fill><patternFill patternType="solid"><fgColor rgb="{TITLE_FILL}"/>'
-        '<bgColor indexed="64"/></patternFill></fill>'
+        f'{colour_fills}'
         '</fills>'
         '<borders count="1"><border/></borders>'
         '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>'
-        '<cellXfs count="4">'
+        f'<cellXfs count="{3 + len(TITLE_FILLS)}">'
         '<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>'
         '<xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1"/>'
-        '<xf numFmtId="0" fontId="2" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1"/>'
         '<xf numFmtId="0" fontId="3" fillId="0" borderId="0" xfId="0" applyFont="1"/>'
+        f'{title_xfs}'
         '</cellXfs>'
         #optional in the schema, but readers warn without a named Normal style
         '<cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>'
@@ -240,10 +281,14 @@ def combined_sheet(sections, sheet_name="Schedule"):
         if index:
             sheet.blank()
 
-        sheet.add([{"value": title, "style": STYLE_TITLE}])
-        sheet.add([{"value": c, "style": STYLE_BOLD} for c in frame.columns])
-
         columns = list(frame.columns)
+
+        #colour the whole width of the table, not just the cell with the name in
+        style = title_style(index)
+        sheet.add([{"value": title if c == 0 else "", "style": style}
+                   for c in range(len(columns))])
+
+        sheet.add([{"value": c, "style": STYLE_BOLD} for c in frame.columns])
         link_columns = {c for c in ("Outreach Info", "Visibility Link") if c in columns}
 
         for _, row in frame.iterrows():

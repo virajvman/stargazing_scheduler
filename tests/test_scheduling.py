@@ -329,6 +329,47 @@ def test_combined_workbook():
     check("elevation is written as a number",
           re.search(r'<c r="C\d+"><v>\d', sheet) is not None)
 
+    #volunteers find their block by the colour of its title row, so each
+    #section needs its own fill, carried right across the table rather than
+    #sitting on the one cell with the name in
+    styles = zf.read("xl/styles.xml").decode()
+    fills = [re.search(r'fgColor rgb="(\w{8})"', f)
+             for f in re.findall(r"<fill>(.*?)</fill>", styles, re.S)]
+    fills = [m.group(1) if m else None for m in fills]
+    xfs = re.findall(r"<xf [^>]*?/>", styles.split("<cellXfs")[1])
+    rows = re.findall(r'<row r="\d+">(.*?)</row>', sheet)
+
+    def title_row(title):
+        """The (column, style) pairs of the row whose first text is title."""
+        for inner in rows:
+            text = re.search(r"<t>([^<]*)</t>", inner)
+            if text and text.group(1) == title:
+                return re.findall(r'<c r="([A-Z]+)\d+" s="(\d+)"', inner)
+        return []
+
+    def fill_of(style):
+        fill_id = int(re.search(r'fillId="(\d+)"', xfs[int(style)]).group(1))
+        return fills[fill_id]
+
+    used, narrow = [], []
+    for title, frame in sections:
+        cells = title_row(title)
+        if len(cells) != len(frame.columns):
+            narrow.append(f"{title}: {len(cells)} of {len(frame.columns)} columns")
+        used.append(fill_of(cells[0][1]) if cells else None)
+
+    check("the title row is coloured across the whole table", not narrow,
+          "; ".join(narrow))
+    check("each telescope gets its own colour",
+          None not in used and len(set(used)) == len(used),
+          str(used))
+
+    #and the palette has to outlast the biggest night the observatory can field
+    biggest = sum(spec["max_count"] for spec in T.TELESCOPE_MODELS.values())
+    check("a full roster never has to reuse a colour",
+          len({spreadsheet.title_style(i) for i in range(biggest)}) == biggest,
+          f"{len(spreadsheet.TITLE_FILLS)} colours for {biggest} telescopes")
+
 
 def test_interval_has_meridian():
     print("\ninterval labels")
